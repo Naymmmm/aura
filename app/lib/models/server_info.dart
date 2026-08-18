@@ -36,11 +36,13 @@ class ServerInfo {
 class ServerConfig {
   final int version;
   final bool preferIp;
+  final int budgetGb; // monthly data budget for ALL users, enforced app-side
   final List<ServerInfo> servers;
 
   const ServerConfig({
     required this.version,
     required this.preferIp,
+    required this.budgetGb,
     required this.servers,
   });
 
@@ -48,6 +50,7 @@ class ServerConfig {
     return ServerConfig(
       version: json['version'] as int,
       preferIp: json['prefer_ip'] as bool? ?? false,
+      budgetGb: json['budget_gb'] as int? ?? 100,
       servers: (json['servers'] as List)
           .map((e) => ServerInfo.fromJson(e as Map<String, dynamic>))
           .toList(),

@@ -24,8 +24,12 @@ foreach ($line in Get-Content "$PSScriptRoot\ips.txt") {
 }
 $servers["romeo"] = $d.vpn1.publicIp
 
-function Set-Record([string]$name, [string]$ip, [bool]$proxied) {
+function Set-Record([string]$name, [string]$ip, [bool]$proxied, [bool]$skipIfExists = $false) {
   $existing = (Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=$name" -Headers $h).result
+  if ($skipIfExists -and $existing.Count -gt 0) {
+    Write-Host "skipping $name — $($existing.Count) record(s) already exist (don't clobber the Worker's custom domain)" -ForegroundColor Yellow
+    return
+  }
   foreach ($r in $existing) {
     Invoke-RestMethod -Method Delete -Uri "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$($r.id)" -Headers $h | Out-Null
   }
@@ -41,8 +45,9 @@ Set-Record "romeo.api"    $servers["romeo"]    $false
 Set-Record "juliet.api"   $servers["juliet"]   $false
 Set-Record "mercutio.api" $servers["mercutio"] $false
 
-# Orange-cloud (proxied=$true) — api.copal.run hits the Worker; placeholder IP is replaced by CF
-Set-Record "api"          "192.0.2.1"          $true
+# Orange-cloud (proxied=$true) — api.copal.run hits the Worker; placeholder IP is replaced by CF.
+# skipIfExists: wrangler's custom_domain owns this record — never clobber it.
+Set-Record "api"          "192.0.2.1"          $true $true
 
 Write-Host "`nVerify BEFORE bootstrapping Caddy:" -ForegroundColor Yellow
 Write-Host '  nslookup juliet.api.copal.run 1.1.1.1   -> expect OCI IP'

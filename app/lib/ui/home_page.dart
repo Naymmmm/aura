@@ -33,6 +33,8 @@ class HomePage extends StatelessWidget {
                       const SizedBox(height: 16),
                       _StatsRow(state: state),
                       const SizedBox(height: 16),
+                      _BudgetBar(state: state),
+                      const SizedBox(height: 16),
                       Row(
                         children: [
                           Text('servers', style: theme.textTheme.titleMedium),
@@ -190,6 +192,56 @@ class _StatusCard extends StatelessWidget {
           _ConnectButton(state: state),
         ],
       ),
+    );
+  }
+}
+
+/// Shared monthly budget meter: usage vs budgetGb from the Worker config.
+class _BudgetBar extends StatelessWidget {
+  const _BudgetBar({required this.state});
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (state.budgetBytes == 0) return const SizedBox.shrink();
+    final frac = state.budgetFraction.clamp(0.0, 1.0).toDouble();
+    final color = state.overBudget
+        ? theme.colorScheme.error
+        : state.budgetWarn
+            ? theme.colorScheme.tertiary
+            : theme.colorScheme.primary;
+    final line = state.overBudget
+        ? AuraLines.pick(AuraLines.budgetOver)
+        : state.budgetWarn
+            ? AuraLines.pick(AuraLines.budgetLow)
+            : AuraLines.pick(AuraLines.budget);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.data_usage, size: 14, color: color),
+            const SizedBox(width: 6),
+            Text(
+              '${_fmtBytes(state.monthUsed)} / ${_fmtBytes(state.budgetBytes)} this month',
+              style: theme.textTheme.labelMedium,
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: frac,
+            minHeight: 6,
+            color: color,
+            backgroundColor: theme.colorScheme.surfaceContainerHighest,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(line, style: theme.textTheme.labelSmall?.copyWith(color: color)),
+      ],
     );
   }
 }

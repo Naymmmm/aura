@@ -49,6 +49,25 @@ class AuraLines {
     'that server fumbled the bag, moving on',
   ];
 
+  static const budget = [
+    'the aura is a shared allowance. spend it wisely',
+    '100GB of pure aura, shared by everyone o7',
+    'monthly aura tax: 100GB max',
+    'aura credits are communal. don\'t be greedy',
+  ];
+
+  static const budgetLow = [
+    'aura running low. ration the packets',
+    'we\'re at 80%+. lock in or log off',
+    'the allowance is coughing. slow down king',
+  ];
+
+  static const budgetOver = [
+    'aura allowance: 0. tapped out fr',
+    'budget blown. we\'ll be so back next month',
+    'the aura is exhausted. skill issue on us (it\'s the budget)',
+  ];
+
   static const toastConnected = 'sheesh. connected to {server}';
   static const toastSwitched = '{from} fell off, switched to {new}';
   static const toastDisconnected = 'aura paused. go touch grass (or don\'t)';

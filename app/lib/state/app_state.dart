@@ -9,6 +9,7 @@ import '../services/clash_api.dart';
 import '../services/config_generator.dart';
 import '../services/config_service.dart';
 import '../services/singbox_manager.dart';
+import '../services/usage_tracker.dart';
 
 enum VpnPhase { disconnected, fetchingConfig, connecting, connected, error }
 
@@ -42,6 +43,26 @@ class AppState extends ChangeNotifier {
   final List<String> _logs = [];
   List<String> get logs => List.unmodifiable(_logs);
 
+  final UsageTracker _usage = UsageTracker();
+  int _budgetBytes = 0; // 0 = no budget configured (config not loaded yet)
+  int _monthUsed = 0;
+  int _pendingUsage = 0;
+  int _pollTick = 0;
+  int _prevUp = 0;
+  int _prevDown = 0;
+
+  /// Bytes used this calendar month (persisted across sessions).
+  int get monthUsed => _monthUsed;
+
+  /// Monthly budget in bytes (0 = not configured).
+  int get budgetBytes => _budgetBytes;
+
+  /// 0.0 → 1.0 share of the monthly budget used.
+  double get budgetFraction => _budgetBytes > 0 ? _monthUsed / _budgetBytes : 0;
+
+  bool get budgetWarn => _budgetBytes > 0 && budgetFraction >= 0.8 && !overBudget;
+  bool get overBudget => _budgetBytes > 0 && _monthUsed >= _budgetBytes;
+
   Timer? _statsTimer;
   String? _clashSecret;
 
@@ -62,6 +83,8 @@ class AppState extends ChangeNotifier {
     setPhase(VpnPhase.fetchingConfig);
     try {
       _serverConfig = await _configService.getConfig(forceRefresh: true);
+      _budgetBytes = _serverConfig!.budgetGb * (1024 * 1024 * 1024);
+      _monthUsed = await _usage.monthUsed();
       _log('config refreshed: ${_serverConfig!.servers.length} servers');
       setPhase(_phase == VpnPhase.connected ? VpnPhase.connected : VpnPhase.disconnected);
     } catch (e) {
@@ -76,6 +99,14 @@ class AppState extends ChangeNotifier {
     _statusLine = null;
     try {
       _serverConfig ??= await _configService.getConfig();
+      _budgetBytes = _serverConfig!.budgetGb * (1024 * 1024 * 1024);
+      _monthUsed = await _usage.monthUsed();
+      if (overBudget) {
+        _statusLine =
+            'monthly budget (${_serverConfig!.budgetGb}GB) used up — the aura is tapped out until next month';
+        setPhase(VpnPhase.error);
+        return false;
+      }
       final dir = await SingboxManager.dir;
       await Directory(dir).create(recursive: true);
       _clashSecret = _randomSecret();
@@ -106,6 +137,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> disconnect() async {
     _statsTimer?.cancel();
+    if (_pendingUsage > 0) {
+      try {
+        await _usage.add(_pendingUsage);
+      } catch (_) {} // persistence must never break a disconnect
+      _pendingUsage = 0;
+    }
     final dir = await SingboxManager.dir;
     try {
       await SingboxManager.stop(configDir: dir);
@@ -122,6 +159,9 @@ class AppState extends ChangeNotifier {
 
   void _startStatsPolling() {
     _statsTimer?.cancel();
+    _prevUp = 0;
+    _prevDown = 0;
+    _pollTick = 0;
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       if (_phase != VpnPhase.connected) return;
       final tags = _serverConfig?.servers.map((s) => s.tag).toList() ?? [];
@@ -137,6 +177,29 @@ class AppState extends ChangeNotifier {
       final (up, down) = await _clash.traffic();
       _upBytes = up;
       _downBytes = down;
+
+      // Budget accounting: /traffic is cumulative since sing-box start,
+      // so the delta vs last poll is what actually flowed through the tunnel.
+      final total = up + down;
+      final prev = _prevUp + _prevDown;
+      _prevUp = up;
+      _prevDown = down;
+      if (total >= prev) {
+        _monthUsed += total - prev;
+        _pendingUsage += total - prev;
+      }
+      if (++_pollTick % 5 == 0 && _pendingUsage > 0) {
+        await _usage.add(_pendingUsage); // persist ~every 10s
+        _pendingUsage = 0;
+      }
+
+      if (overBudget) {
+        _log('budget exhausted (${_monthUsed ~/ (1024 * 1024)} MB) — hard stop');
+        _statusLine = 'budget blown. disconnecting. we’ll be so back next month.';
+        await disconnect();
+        return;
+      }
+
       notifyListeners();
     });
   }

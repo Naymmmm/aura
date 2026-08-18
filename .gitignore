@@ -6,6 +6,7 @@ dist/
 # secrets — NEVER commit
 secrets/*.local
 worker/.dev.vars
+worker/servers.json
 app/lib/secrets.dart
 .cloudflare-auth-token
 

@@ -9,14 +9,14 @@ $script:Auth    = "security_token"
 function Oci {
   # Wrapper that always passes --profile copal --auth security_token.
   param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-  & oci --profile $script:Profile --auth $script:Auth @Args
+  & oci.exe --profile $script:Profile --auth $script:Auth @Args
   if ($LASTEXITCODE -ne 0) { throw "oci $($Args -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
 function Oci-Raw {
   # Like Oci but returns raw exit code instead of throwing (for retry loops).
   param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-  & oci --profile $script:Profile --auth $script:Auth @Args
+  & oci.exe --profile $script:Profile --auth $script:Auth @Args
   return $LASTEXITCODE
 }
 
@@ -36,9 +36,9 @@ function New-ProxyCreds {
   return @{ username = $u; password = $p }
 }
 
-function Test-Ssh([string]$Host, [int]$TimeoutSec = 8) {
-  # Quick reachability check as ubuntu user with the standard key.
+function Test-Ssh([string]$HostName, [string]$User = "ubuntu", [int]$TimeoutSec = 8) {
+  # Quick reachability check with the standard key.
   $null = ssh -i "$env:USERPROFILE\.ssh\id_ed25519" -o ConnectTimeout=$TimeoutSec `
-    -o StrictHostKeyChecking=accept-new -o BatchMode=yes ubuntu@$Host 'echo ok' 2>$null
+    -o StrictHostKeyChecking=accept-new -o BatchMode=yes $User@$HostName 'echo ok' 2>$null
   return $LASTEXITCODE -eq 0
 }

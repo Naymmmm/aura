@@ -37,7 +37,8 @@
       "server_port": 443,
       "username": "{{ROMEO_USER}}",
       "password": "{{ROMEO_PASS}}",
-      "tls": { "enabled": true, "server_name": "romeo.api.copal.run" }
+      "tls": { "enabled": true, "server_name": "romeo.api.copal.run" },
+      "udp_over_tcp": {}
     },
     {
       "type": "naive",
@@ -46,7 +47,8 @@
       "server_port": 443,
       "username": "{{JULIET_USER}}",
       "password": "{{JULIET_PASS}}",
-      "tls": { "enabled": true, "server_name": "juliet.api.copal.run" }
+      "tls": { "enabled": true, "server_name": "juliet.api.copal.run" },
+      "udp_over_tcp": {}
     },
     {
       "type": "naive",
@@ -55,7 +57,8 @@
       "server_port": 443,
       "username": "{{MERCUTIO_USER}}",
       "password": "{{MERCUTIO_PASS}}",
-      "tls": { "enabled": true, "server_name": "mercutio.api.copal.run" }
+      "tls": { "enabled": true, "server_name": "mercutio.api.copal.run" },
+      "udp_over_tcp": {}
     },
     {
       "type": "urltest",
