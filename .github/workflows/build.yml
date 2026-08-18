@@ -1,0 +1,115 @@
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  SB_VERSION: 1.13.15
+  FLUTTER_VERSION: 3.44.9
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Prepare secrets.dart from example
+        shell: pwsh
+        run: Copy-Item app/lib/secrets.example.dart app/lib/secrets.dart -Force
+
+      - name: Download sing-box (windows-amd64)
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\singbox"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = "$dir\sb.zip"
+          Invoke-WebRequest "https://github.com/SagerNet/sing-box/releases/download/v$env:SB_VERSION/sing-box-$env:SB_VERSION-windows-amd64.zip" -OutFile $zip
+          $extract = "$dir\ex"
+          Expand-Archive $zip $extract
+          Get-ChildItem "$extract" -Directory | Select-Object -First 1 | ForEach-Object {
+            Get-ChildItem $_.FullName | Copy-Item -Destination $dir -Recurse -Force
+          }
+          if (-not (Test-Path "$dir\wintun.dll")) {
+            Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$dir\wintun.zip"
+            Expand-Archive "$dir\wintun.zip" "$dir\w"
+            Copy-Item "$dir\w\wintun\bin\amd64\wintun.dll" "$dir"
+          }
+          echo "SB_DIR=$dir" >> $env:GITHUB_ENV
+
+      - run: flutter pub get
+        working-directory: app
+
+      - run: flutter build windows --release
+        working-directory: app
+
+      - name: Bundle sing-box + zip
+        shell: pwsh
+        run: |
+          $rel = "app\build\windows\x64\runner\Release"
+          New-Item -ItemType Directory -Force -Path "$rel\sing-box" | Out-Null
+          Get-ChildItem "$env:SB_DIR" | Copy-Item -Destination "$rel\sing-box" -Force
+          Compress-Archive -Path "$rel\*" -DestinationPath aura-windows-amd64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aura-windows-amd64
+          path: aura-windows-amd64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Prepare secrets.dart from example
+        run: cp app/lib/secrets.example.dart app/lib/secrets.dart
+
+      - name: Download sing-box (darwin-arm64)
+        run: |
+          SB_DIR="$RUNNER_TEMP/singbox"; mkdir -p "$SB_DIR"
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-darwin-arm64.tar.gz" | tar -xz -C "$SB_DIR" --strip-components=1
+          echo "SB_DIR=$SB_DIR" >> "$GITHUB_ENV"
+
+      - run: flutter pub get
+        working-directory: app
+
+      - run: flutter build macos --release
+        working-directory: app
+
+      - name: Bundle sing-box + zip
+        run: |
+          APP="app/build/macos/Build/Products/Release/aura.app"
+          mkdir -p "$APP/Contents/MacOS/sing-box"
+          cp "$SB_DIR"/sing-box "$APP/Contents/MacOS/sing-box/"
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --keepParent "$APP" aura-macos-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aura-macos-arm64
+          path: aura-macos-arm64.zip
+
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.zip

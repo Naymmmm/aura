@@ -1,0 +1,19 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - fail2ban
+runcmd:
+  - sed -i 's/^Prompt=lts$/Prompt=never/' /etc/update-manager/release-upgrades
+  - printf 'APT::Periodic::Update-Package-Lists "0";\nAPT::Periodic::Unattended-Upgrade "0";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+  - systemctl disable --now unattended-upgrades || true
+  - curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh
+  - usermod -aG docker ubuntu
+  - systemctl enable --now docker
+  - mkdir -p /etc/naiveproxy /var/www/html
+  - printf 'you found nothing. this is a decoy site. o7\n' > /var/www/html/index.html
+  - printf '[sshd]\nenabled = true\nmode = aggressive\nmaxretry = 3\nbantime = 1h\nfindtime = 10m\n' > /etc/fail2ban/jail.d/00-sshd.local
+  - systemctl enable --now fail2ban
+# Optional: uncomment if IPv6 RA/NDP noise appears
+#  - printf 'net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\n' > /etc/sysctl.d/99-disable-ipv6.conf
+#  - sysctl -w net.ipv6.conf.all.disable_ipv6=1

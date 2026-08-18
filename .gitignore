@@ -1,0 +1,25 @@
+# build artifacts
+build/
+dist/
+*.log
+
+# secrets — NEVER commit
+secrets/*.local
+worker/.dev.vars
+app/lib/secrets.dart
+.cloudflare-auth-token
+
+# infra local state (private repo anyway, but keep run data clean)
+infra/discovered.json
+infra/ips.txt
+infra/credentials.json
+infra/*.tmp
+
+# flutter/dart
+app/.dart_tool/
+app/.flutter-plugins*
+app/build/
+app/windows/flutter/ephemeral/
+
+# node
+worker/node_modules/

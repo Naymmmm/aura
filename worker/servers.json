@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "updated_at": "2026-08-18T00:00:00Z",
+  "prefer_ip": false,
+  "servers": [
+    { "tag": "romeo",    "host": "romeo.api.copal.run",    "ip": "PLACEHOLDER", "username": "PLACEHOLDER", "password": "PLACEHOLDER" },
+    { "tag": "juliet",   "host": "juliet.api.copal.run",   "ip": "PLACEHOLDER", "username": "PLACEHOLDER", "password": "PLACEHOLDER" },
+    { "tag": "mercutio", "host": "mercutio.api.copal.run", "ip": "PLACEHOLDER", "username": "PLACEHOLDER", "password": "PLACEHOLDER" }
+  ]
+}

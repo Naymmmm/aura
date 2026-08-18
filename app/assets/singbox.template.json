@@ -1,0 +1,87 @@
+{
+  "log": { "level": "info", "timestamp": true, "output": "sing-box.log" },
+  "dns": {
+    "independent_cache": true,
+    "servers": [
+      { "type": "https", "tag": "remote", "server": "1.1.1.1", "detour": "auto" },
+      { "type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" }
+    ],
+    "rules": [
+      { "query_type": ["A", "AAAA"], "server": "fakeip" },
+      { "server": "remote" }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": ["172.19.0.1/30"],
+      "mtu": 9000,
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "mixed",
+      "sniff": true
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7890
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "naive",
+      "tag": "romeo",
+      "server": "{{ROMEO_SERVER}}",
+      "server_port": 443,
+      "username": "{{ROMEO_USER}}",
+      "password": "{{ROMEO_PASS}}",
+      "tls": { "enabled": true, "server_name": "romeo.api.copal.run" }
+    },
+    {
+      "type": "naive",
+      "tag": "juliet",
+      "server": "{{JULIET_SERVER}}",
+      "server_port": 443,
+      "username": "{{JULIET_USER}}",
+      "password": "{{JULIET_PASS}}",
+      "tls": { "enabled": true, "server_name": "juliet.api.copal.run" }
+    },
+    {
+      "type": "naive",
+      "tag": "mercutio",
+      "server": "{{MERCUTIO_SERVER}}",
+      "server_port": 443,
+      "username": "{{MERCUTIO_USER}}",
+      "password": "{{MERCUTIO_PASS}}",
+      "tls": { "enabled": true, "server_name": "mercutio.api.copal.run" }
+    },
+    {
+      "type": "urltest",
+      "tag": "auto",
+      "outbounds": ["romeo", "juliet", "mercutio"],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "10m",
+      "tolerance": 50,
+      "idle_timeout": "30m"
+    },
+    { "type": "direct", "tag": "direct" },
+    { "type": "dns", "tag": "dns-out" },
+    { "type": "block", "tag": "block" }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "rules": [
+      { "protocol": "dns", "outbound": "dns-out" },
+      { "inbound": ["tun-in"], "ip_is_private": true, "outbound": "direct" },
+      { "ip_cidr": ["224.0.0.0/4", "255.255.255.255/32"], "outbound": "block" },
+      { "outbound": "auto" }
+    ],
+    "final": "auto"
+  },
+  "experimental": {
+    "clash_api": { "external_controller": "127.0.0.1:9090", "secret": "{{CLASH_SECRET}}" },
+    "cache_file": { "enabled": true, "path": "cache.db", "store_fakeip": true }
+  }
+}
