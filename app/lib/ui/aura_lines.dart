@@ -2,8 +2,64 @@
 // Each list maps to a real VPN state — the UI stays functional, just
 // with aura. o7
 
+import '../services/session_service.dart';
+
 class AuraLines {
   AuraLines._();
+
+  static const loggedOut = [
+    'no aura on this machine yet. log in',
+    'the aura is locked. you got the key?',
+    'logged out. come back with creds',
+    'aura: 0. login to ascend',
+  ];
+
+  static const badCreds = [
+    'wrong account id or token. check the copy-paste king',
+    'those creds are not it. ask the admin',
+    'bad creds. the aura rejected you (respectfully)',
+  ];
+
+  static const accountExpired = [
+    'your aura ran out. expired account. ask the admin for +30 days',
+    'account expired. the aura has left the building',
+    'expired. you need a refill, king',
+  ];
+
+  static const accountDisabled = [
+    'account disabled by the admin. go think about what you did',
+    'your aura has been suspended. check with the admin',
+  ];
+
+  static const poolExhausted = [
+    'the cred pool is empty rn. try again in a bit',
+    'all creds are leased. the aura is busy. retry king',
+  ];
+
+  static const sessionGone = [
+    'session expired server-side. log back in',
+    'the session left without you. log in again',
+  ];
+
+  /// One meme line for an auth failure kind (empty string when none).
+  static String authError(AuthErrorKind? kind) {
+    switch (kind) {
+      case AuthErrorKind.badCreds:
+        return pick(badCreds);
+      case AuthErrorKind.accountExpired:
+        return pick(accountExpired);
+      case AuthErrorKind.accountDisabled:
+        return pick(accountDisabled);
+      case AuthErrorKind.poolExhausted:
+        return pick(poolExhausted);
+      case AuthErrorKind.sessionGone:
+        return pick(sessionGone);
+      case AuthErrorKind.network:
+        return 'couldn\'t reach api.copal.run. check your internet fr';
+      case null:
+        return '';
+    }
+  }
 
   static const disconnected = [
     'no aura right now. network is cringe',

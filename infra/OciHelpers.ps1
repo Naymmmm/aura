@@ -3,6 +3,10 @@
 
 param() # keep script as a dot-sourced library
 
+# Legacy native-arg passing wraps args containing quotes in literal single quotes,
+# which breaks oci's --shape-config/--nsg-ids JSON parsing. Force modern passing.
+$PSNativeCommandArgumentPassing = 'Standard'
+
 $script:Profile = "copal"
 $script:Auth    = "security_token"
 

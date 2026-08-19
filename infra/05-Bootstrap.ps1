@@ -16,8 +16,8 @@ foreach ($line in Get-Content $IpsFile) {
   $p = $line -split "`t"
   if ($p.Count -ge 3) { $servers[$p[0]] = $p[2] }
 }
-# SSH user per box: romeo is Oracle Linux (opc), juliet/mercutio are Ubuntu (ubuntu)
-$sshUsers = @{ romeo = "opc"; juliet = "ubuntu"; mercutio = "ubuntu" }
+# SSH user per box: all Ubuntu after the 2026-08-19 remake (romeo was OL9 before)
+$sshUsers = @{ romeo = "ubuntu"; juliet = "ubuntu"; mercutio = "ubuntu" }
 
 function Get-Hostname([string]$name) { return "$name.api.copal.run" }
 

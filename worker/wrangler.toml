@@ -11,3 +11,7 @@ routes = [
 [[kv_namespaces]]
 binding = "SERVERS"
 id = "ae43f700dc294f62ab98b42b82f7b12d"
+
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "aura-releases"

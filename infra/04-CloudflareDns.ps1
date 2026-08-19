@@ -22,10 +22,12 @@ foreach ($line in Get-Content "$PSScriptRoot\ips.txt") {
   $parts = $line -split "`t"
   if ($parts.Count -ge 3) { $servers[$parts[0]] = $parts[2] }
 }
-$servers["romeo"] = $d.vpn1.publicIp
+# NOTE: ips.txt is authoritative (all 3 servers, incl. romeo, after the 2026-08-19 remake)
 
 function Set-Record([string]$name, [string]$ip, [bool]$proxied, [bool]$skipIfExists = $false) {
-  $existing = (Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=$name" -Headers $h).result
+  # CF's name filter is exact-match — query the FQDN, not the relative name
+  $fqdn = if ($name -like "*.$ZoneName") { $name } else { "$name.$ZoneName" }
+  $existing = (Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=$fqdn" -Headers $h).result
   if ($skipIfExists -and $existing.Count -gt 0) {
     Write-Host "skipping $name — $($existing.Count) record(s) already exist (don't clobber the Worker's custom domain)" -ForegroundColor Yellow
     return

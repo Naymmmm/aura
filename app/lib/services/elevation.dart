@@ -23,8 +23,13 @@ $p = Start-Process -FilePath $exe `
   -ArgumentList @('run','-D',"$Dir",'-c',(Join-Path $Dir 'config.json')) `
   -WorkingDirectory $Dir -Verb RunAs -WindowStyle Hidden -PassThru
 if ($null -eq $p) { Write-Error 'UAC cancelled or failed'; exit 2 }
-$p.Id | Out-File -Encoding ascii (Join-Path $Dir 'sing-box.pid')
-Write-Output "started $($p.Id)"
+# -Verb RunAs can hand back the shell's pid, not sing-box's — resolve the real one.
+Start-Sleep -Milliseconds 500
+$real = Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue |
+  Sort-Object StartTime -Descending | Select-Object -First 1
+$pidToWrite = if ($real) { $real.Id } else { $p.Id }
+$pidToWrite | Out-File -Encoding ascii (Join-Path $Dir 'sing-box.pid')
+Write-Output "started $pidToWrite"
 ''';
     }
     // macOS: root shell launches it detached; the pid lands in the same file.
@@ -38,13 +43,9 @@ do shell script "cd '"$Dir"' && nohup ./sing-box run -D '"$Dir"' -c '"$Dir"/conf
       return r'''
 param([string]$Dir)
 $pidFile = Join-Path $Dir 'sing-box.pid'
-if (Test-Path $pidFile) {
-  $pidStr = (Get-Content $pidFile -Raw).Trim()
-  if ($pidStr) {
-    Start-Process taskkill -ArgumentList @('/PID',$pidStr,'/T','/F') -Verb RunAs -WindowStyle Hidden -Wait
-    Remove-Item $pidFile -Force
-  }
-}
+if (Test-Path $pidFile) { Remove-Item $pidFile -Force }
+# Kill by image name: pid bookkeeping can miss the real (child) process.
+Start-Process taskkill -ArgumentList @('/IM','sing-box.exe','/T','/F') -Verb RunAs -WindowStyle Hidden -Wait
 ''';
     }
     return r'''

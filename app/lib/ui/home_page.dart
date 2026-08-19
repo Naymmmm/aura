@@ -107,6 +107,11 @@ class _Header extends StatelessWidget {
           Text('AURA', style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900, letterSpacing: 2)),
           const Spacer(),
           IconButton(
+            tooltip: 'log out',
+            onPressed: state.logout,
+            icon: const Icon(Icons.logout),
+          ),
+          IconButton(
             tooltip: 'logs',
             onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => LogsPage(state: state))),
             icon: const Icon(Icons.terminal),
@@ -126,6 +131,12 @@ class _StatusCard extends StatelessWidget {
     final theme = Theme.of(context);
 
     final (phaseColor, icon, line, sub) = switch (state.phase) {
+      VpnPhase.loggedOut => (
+          theme.colorScheme.onSurfaceVariant,
+          Icons.lock_outline,
+          AuraLines.pick(AuraLines.loggedOut),
+          'log in to unlock the aura',
+        ),
       VpnPhase.disconnected => (
           theme.colorScheme.onSurfaceVariant,
           Icons.power_settings_new,

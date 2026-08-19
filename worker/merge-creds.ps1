@@ -18,7 +18,7 @@ foreach ($line in Get-Content "$PSScriptRoot\..\infra\ips.txt") {
   $p = $line -split "`t"
   if ($p.Count -ge 3) {
     foreach ($s in $payload.servers) {
-      if ($s.tag -eq $p[0] -and $s.ip -eq "PLACEHOLDER") { $s.ip = $p[2] }
+      if ($s.tag -eq $p[0]) { $s.ip = $p[2] }   # unconditional: ips.txt is authoritative
     }
   }
 }

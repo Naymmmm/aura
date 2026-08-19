@@ -1,0 +1,50 @@
+// Shared helpers + Env for copal-api.
+
+export interface Env {
+  SERVERS: KVNamespace;
+  RELEASES: R2Bucket;
+  API_SECRET: string;
+  ADMIN_PASSWORD: string;
+}
+
+export const HDRS = {
+  'content-type': 'application/json',
+  'cache-control': 'no-store',
+  'access-control-allow-origin': '*',
+};
+
+export function json(o: unknown, s: number) {
+  return new Response(JSON.stringify(o), { status: s, headers: HDRS });
+}
+
+export async function safeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const da = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(a)));
+  const db = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(b)));
+  let diff = 0;
+  for (let i = 0; i < da.length; i++) diff |= da[i] ^ db[i];
+  return diff === 0;
+}
+
+export async function sha256Hex(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function nowSec(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+export async function kvGetJson<T>(kv: KVNamespace, key: string, fallback: T): Promise<T> {
+  const raw = await kv.get(key);
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function kvPutJson(kv: KVNamespace, key: string, val: unknown): Promise<void> {
+  await kv.put(key, JSON.stringify(val));
+}

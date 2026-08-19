@@ -37,7 +37,7 @@ function Launch-A1([string]$Name, [string]$Ad, [int]$Ocpus, [int]$MemGB) {
   Oci compute instance launch @a
 }
 
-$adPool = @($d.vpn1.ad, $d.otherAd) | Where-Object { $_ }
+$adPool = @(@($d.vpn1.ad, $d.otherAd) | Where-Object { $_ })
 
 foreach ($n in $Names) {
   $ok = $false

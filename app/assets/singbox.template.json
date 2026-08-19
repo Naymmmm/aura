@@ -19,8 +19,7 @@
       "mtu": 9000,
       "auto_route": true,
       "strict_route": true,
-      "stack": "mixed",
-      "sniff": true
+      "stack": "gvisor"
     },
     {
       "type": "mixed",
@@ -70,13 +69,13 @@
       "idle_timeout": "30m"
     },
     { "type": "direct", "tag": "direct" },
-    { "type": "dns", "tag": "dns-out" },
     { "type": "block", "tag": "block" }
   ],
   "route": {
     "auto_detect_interface": true,
+    "default_domain_resolver": { "server": "remote" },
     "rules": [
-      { "protocol": "dns", "outbound": "dns-out" },
+      { "inbound": ["tun-in"], "action": "sniff" },
       { "inbound": ["tun-in"], "ip_is_private": true, "outbound": "direct" },
       { "ip_cidr": ["224.0.0.0/4", "255.255.255.255/32"], "outbound": "block" },
       { "outbound": "auto" }

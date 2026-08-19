@@ -24,3 +24,6 @@ app/windows/flutter/ephemeral/
 
 # node
 worker/node_modules/
+worker/pool.json
+.wrangler/
+worker/accounts-seed.json
