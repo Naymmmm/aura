@@ -4,7 +4,9 @@
 import { json } from './util';
 import type { Env } from './util';
 
-// POST /v1/admin/release — multipart form field "file" (cookie-gated in admin.ts)
+// POST /v1/admin/release — multipart: form field "file", optional "key"
+// (default "latest", e.g. "latest-macos" for other platforms).
+// cookie-gated in admin.ts.
 export async function handleRelease(req: Request, env: Env): Promise<Response> {
   const cl = Number(req.headers.get('content-length') ?? '0');
   if (cl > 95 * 1024 * 1024) return json({ error: 'too_large' }, 413); // free-plan body cap ~100MB
@@ -16,16 +18,18 @@ export async function handleRelease(req: Request, env: Env): Promise<Response> {
   }
   const file = fd.get('file');
   if (!(file instanceof File)) return json({ error: 'bad_request' }, 400);
+  let key = String(fd.get('key') ?? 'latest');
+  if (!/^[a-z0-9-]{1,32}$/.test(key)) key = 'latest';
 
-  await env.RELEASES.put('latest', file);
-  await env.RELEASES.put('aura-' + stampNow() + '.zip', file);
+  await env.RELEASES.put(key, file);
+  await env.RELEASES.put(key === 'latest' ? 'aura-' + stampNow() + '.zip' : `aura-${stampNow()}-${key}.zip`, file);
 
   // keep only the newest 5 versioned copies
   const listed = await env.RELEASES.list({ prefix: 'aura-' });
   const stale = listed.objects.sort((a, b) => b.uploaded - a.uploaded).slice(5);
   for (const o of stale) await env.RELEASES.delete(o.key);
 
-  return json({ key: 'latest', url: 'https://api.copal.run/dl/latest', size: file.size }, 200);
+  return json({ key, url: `https://api.copal.run/dl/${key}`, size: file.size }, 200);
 }
 
 // GET /dl/{key} — public
@@ -37,7 +41,7 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
 
   const headers: Record<string, string> = {
     'content-type': 'application/zip',
-    'content-disposition': 'attachment; filename="aura-release.zip"',
+    'content-disposition': `attachment; filename="${dlName(key)}"`,
     etag: obj.etag,
     'accept-ranges': 'bytes',
     'cache-control': 'public, max-age=3600',
@@ -57,6 +61,12 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
     status: 200,
     headers: { ...headers, 'content-length': String(obj.size) },
   });
+}
+
+function dlName(key: string): string {
+  if (key === 'latest') return 'aura-windows-amd64.zip';
+  if (key === 'latest-macos') return 'aura-macos-arm64.zip';
+  return 'aura-release.zip';
 }
 
 // bytes=start-end | bytes=start-  (single range only; others ignored → full 200)

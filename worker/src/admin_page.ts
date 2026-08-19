@@ -129,7 +129,8 @@ const PAGE = `<!doctype html>
         <div class="row">
           <input id="relFile" type="file" accept=".zip,application/zip" style="flex:2">
           <button id="relBtn">Upload release</button>
-          <a id="relLink" href="/dl/latest" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ latest download</a>
+          <a id="relLink" href="/dl/latest" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ win</a>
+          <a id="relMacLink" href="/dl/latest-macos" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ mac</a>
         </div>
         <div id="relErr" class="err"></div>
       </div>
