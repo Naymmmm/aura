@@ -3,7 +3,7 @@
   "dns": {
     "independent_cache": true,
     "servers": [
-      { "type": "https", "tag": "remote", "server": "1.1.1.1", "detour": "auto" },
+      { "type": "https", "tag": "remote", "server": "1.1.1.1", "detour": "direct" },
       { "type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" }
     ],
     "rules": [
@@ -16,10 +16,10 @@
       "type": "tun",
       "tag": "tun-in",
       "address": ["172.19.0.1/30"],
-      "mtu": 9000,
+      "mtu": 1400,
       "auto_route": true,
       "strict_route": true,
-      "stack": "gvisor"
+      "stack": "system"
     },
     {
       "type": "mixed",

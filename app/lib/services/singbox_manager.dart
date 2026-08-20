@@ -28,7 +28,11 @@ class SingboxManager {
   static Future<void> ensureBinary() async {
     final d = await dir;
     final exeName = Platform.isWindows ? 'sing-box.exe' : 'sing-box';
-    if (File(_p(d, exeName)).existsSync()) return;
+    final installed = File(_p(d, exeName));
+    if (installed.existsSync()) {
+      if (Platform.isMacOS) await Process.run('chmod', ['755', installed.path]);
+      return;
+    }
 
     await Directory(d).create(recursive: true);
     final bundleDir = _bundleDir();
@@ -38,6 +42,14 @@ class SingboxManager {
     }
     for (final f in Directory(bundleDir).listSync()) {
       if (f is File) f.copySync(_p(d, f.uri.pathSegments.last));
+    }
+    if (Platform.isMacOS) {
+      // File.copy copies bytes, not the executable bit. Without this, the
+      // privileged shell reports success but cannot start the bundled core.
+      final chmod = await Process.run('chmod', ['755', _p(d, exeName)]);
+      if (chmod.exitCode != 0) {
+        throw StateError('could not make sing-box executable: ${chmod.stderr}');
+      }
     }
     // Mark the dir with its version so future upgrades re-copy.
     File(_p(d, 'version')).writeAsStringSync(version);
@@ -103,5 +115,16 @@ class SingboxManager {
     }
     final r = await Process.run('kill', ['-0', '$pid']);
     return r.exitCode == 0;
+  }
+
+  static Future<String> recentLog(String configDir) async {
+    final file = File(_p(configDir, 'sing-box.log'));
+    if (!await file.exists()) return 'no sing-box log was created';
+    final text = await file.readAsString();
+    final lines =
+        text.split(RegExp(r'\r?\n')).where((line) => line.isNotEmpty).toList();
+    return lines.length <= 12
+        ? lines.join('\n')
+        : lines.sublist(lines.length - 12).join('\n');
   }
 }

@@ -171,11 +171,15 @@ class AppState extends ChangeNotifier {
         clashSecret: _clashSecret!,
       );
       _clash.setSecret(_clashSecret!);
-      await SingboxManager.start(configDir: dir);
+      final started = await SingboxManager.start(configDir: dir);
+      if (started.exitCode != 0) {
+        throw StateError('sing-box launch failed: ${started.stderr}');
+      }
 
       final active = await _clash.waitForActive(const Duration(seconds: 20));
       if (active == null) {
-        throw StateError('sing-box started but no server came alive');
+        final log = await SingboxManager.recentLog(dir);
+        throw StateError('sing-box started but no server came alive\n$log');
       }
       _activeServer = active;
       setPhase(VpnPhase.connected);

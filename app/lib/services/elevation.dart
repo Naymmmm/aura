@@ -32,10 +32,15 @@ $pidToWrite | Out-File -Encoding ascii (Join-Path $Dir 'sing-box.pid')
 Write-Output "started $pidToWrite"
 ''';
     }
-    // macOS: root shell launches it detached; the pid lands in the same file.
-    return r'''
-do shell script "cd '"$Dir"' && nohup ./sing-box run -D '"$Dir"' -c '"$Dir"/config.json' > '"$Dir"/sing-box.log' 2>&1 & echo $! > '"$Dir"/sing-box.pid'" with administrator privileges
-''';
+    // macOS: use a fully-expanded, quoted command. The previous script was
+    // copied from the PowerShell path and left `$Dir` literal in AppleScript,
+    // so macOS tried to launch from a directory named "$Dir".
+    final q = _shellQuote(dir);
+    final command =
+        'cd $q && nohup ./sing-box run -D $q -c $q/config.json '
+        '> $q/sing-box.log 2>&1 & echo \$! > $q/sing-box.pid';
+    return 'do shell script ${_appleScriptString(command)} '
+        'with administrator privileges';
   }
 
   static String stopScript(String dir) {
@@ -48,10 +53,21 @@ if (Test-Path $pidFile) { Remove-Item $pidFile -Force }
 Start-Process taskkill -ArgumentList @('/IM','sing-box.exe','/T','/F') -Verb RunAs -WindowStyle Hidden -Wait
 ''';
     }
-    return r'''
-do shell script "kill $(cat '"$Dir"'/sing-box.pid) 2>/dev/null; rm -f '"$Dir"'/sing-box.pid" with administrator privileges
-''';
+    final q = _shellQuote(dir);
+    final command =
+        'if [ -f $q/sing-box.pid ]; then kill "\$(cat $q/sing-box.pid)" '
+        '2>/dev/null || true; fi; rm -f $q/sing-box.pid';
+    return 'do shell script ${_appleScriptString(command)} '
+        'with administrator privileges';
   }
+
+  /// A POSIX shell word, safe for a path controlled by the app sandbox.
+  static String _shellQuote(String value) =>
+      "'${value.replaceAll("'", "'\"'\"'")}'";
+
+  /// A double-quoted AppleScript string literal.
+  static String _appleScriptString(String value) =>
+      '"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"';
 
   static Future<bool> isElevated() async {
     if (Platform.isWindows) {

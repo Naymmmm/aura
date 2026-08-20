@@ -20,16 +20,43 @@ class ConfigGenerator {
   }) async {
     final raw = await rootBundle.loadString(_templateAsset);
     final s = raw
-        .replaceAll('{{ROMEO_SERVER}}', _serverFor(serverConfig, 'romeo'))
-        .replaceAll('{{ROMEO_USER}}', _userFor(serverConfig, 'romeo'))
-        .replaceAll('{{ROMEO_PASS}}', _passFor(serverConfig, 'romeo'))
-        .replaceAll('{{JULIET_SERVER}}', _serverFor(serverConfig, 'juliet'))
-        .replaceAll('{{JULIET_USER}}', _userFor(serverConfig, 'juliet'))
-        .replaceAll('{{JULIET_PASS}}', _passFor(serverConfig, 'juliet'))
-        .replaceAll('{{MERCUTIO_SERVER}}', _serverFor(serverConfig, 'mercutio'))
-        .replaceAll('{{MERCUTIO_USER}}', _userFor(serverConfig, 'mercutio'))
-        .replaceAll('{{MERCUTIO_PASS}}', _passFor(serverConfig, 'mercutio'))
-        .replaceAll('{{CLASH_SECRET}}', clashSecret);
+        .replaceAll(
+          '{{ROMEO_SERVER}}',
+          _jsonStringContent(_serverFor(serverConfig, 'romeo')),
+        )
+        .replaceAll(
+          '{{ROMEO_USER}}',
+          _jsonStringContent(_userFor(serverConfig, 'romeo')),
+        )
+        .replaceAll(
+          '{{ROMEO_PASS}}',
+          _jsonStringContent(_passFor(serverConfig, 'romeo')),
+        )
+        .replaceAll(
+          '{{JULIET_SERVER}}',
+          _jsonStringContent(_serverFor(serverConfig, 'juliet')),
+        )
+        .replaceAll(
+          '{{JULIET_USER}}',
+          _jsonStringContent(_userFor(serverConfig, 'juliet')),
+        )
+        .replaceAll(
+          '{{JULIET_PASS}}',
+          _jsonStringContent(_passFor(serverConfig, 'juliet')),
+        )
+        .replaceAll(
+          '{{MERCUTIO_SERVER}}',
+          _jsonStringContent(_serverFor(serverConfig, 'mercutio')),
+        )
+        .replaceAll(
+          '{{MERCUTIO_USER}}',
+          _jsonStringContent(_userFor(serverConfig, 'mercutio')),
+        )
+        .replaceAll(
+          '{{MERCUTIO_PASS}}',
+          _jsonStringContent(_passFor(serverConfig, 'mercutio')),
+        )
+        .replaceAll('{{CLASH_SECRET}}', _jsonStringContent(clashSecret));
 
     // Validate it still parses as JSON before writing (template drift guard).
     jsonDecode(s);
@@ -47,4 +74,11 @@ class ConfigGenerator {
 
   static String _passFor(ServerConfig cfg, String tag) =>
       cfg.byTag(tag)?.password ?? '';
+
+  /// Template placeholders live inside JSON quotes, so retain only the
+  /// escaped JSON string contents rather than adding a second quote pair.
+  static String _jsonStringContent(String value) {
+    final encoded = jsonEncode(value);
+    return encoded.substring(1, encoded.length - 1);
+  }
 }
