@@ -30,11 +30,12 @@ class SingboxManager {
     final d = await dir;
     final exeName = Platform.isWindows ? 'sing-box.exe' : 'sing-box';
     final verFile = File(_p(d, 'version'));
-    if (File(_p(d, exeName)).existsSync() &&
+    final haveCore = File(_p(d, exeName)).existsSync() &&
         verFile.existsSync() &&
-        verFile.readAsStringSync().trim() == version) {
-      return;
-    }
+        verFile.readAsStringSync().trim() == version;
+    // Heal quarantine on every launch, even when the core is up to date.
+    if (haveCore && Platform.isMacOS) await _stripQuarantine(d);
+    if (haveCore) return;
 
     await Directory(d).create(recursive: true);
     final bundleDir = _bundleDir();
@@ -48,12 +49,15 @@ class SingboxManager {
     // Mark the dir with its version so future upgrades re-copy.
     verFile.writeAsStringSync(version);
 
-    // macOS: downloaded zips carry com.apple.quarantine; Gatekeeper silently
-    // SIGKILLs the quarantined core ("Killed: 9" in sing-box.log, app sees
-    // "no server came alive"). Strip it from our own copied dir.
-    if (Platform.isMacOS) {
-      await Process.run('xattr', ['-dr', 'com.apple.quarantine', d]);
-    }
+    if (Platform.isMacOS) await _stripQuarantine(d);
+  }
+
+  /// macOS: downloaded zips carry com.apple.quarantine; Gatekeeper silently
+  /// SIGKILLs the quarantined core ("Killed: 9" in sing-box.log, app sees
+  /// "no server came alive"). Strip it from our own support dir. Runs on
+  /// every launch — idempotent, and heals cores copied by older builds.
+  static Future<void> _stripQuarantine(String d) async {
+    await Process.run('xattr', ['-dr', 'com.apple.quarantine', d]);
   }
 
   /// The bundled sing-box dir lives next to the app executable.
