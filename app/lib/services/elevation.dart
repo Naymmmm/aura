@@ -32,10 +32,12 @@ $pidToWrite | Out-File -Encoding ascii (Join-Path $Dir 'sing-box.pid')
 Write-Output "started $pidToWrite"
 ''';
     }
-    // macOS: root shell launches it detached; the pid lands in the same file.
-    return r'''
-do shell script "cd '"$Dir"' && nohup ./sing-box run -D '"$Dir"' -c '"$Dir"/config.json' > '"$Dir"/sing-box.log' 2>&1 & echo $! > '"$Dir"/sing-box.pid'" with administrator privileges
-''';
+    // macOS: shell scripts written next to the config (real paths baked in at
+    // write time); osascript runs them as root. AppleScript does not
+    // interpolate shell variables, so paths must never be passed through
+    // "do shell script" as $VARS — they die the same way every one of these
+    // posts ends up broken.
+    return macLaunchScript(dir);
   }
 
   static String stopScript(String dir) {
@@ -48,9 +50,40 @@ if (Test-Path $pidFile) { Remove-Item $pidFile -Force }
 Start-Process taskkill -ArgumentList @('/IM','sing-box.exe','/T','/F') -Verb RunAs -WindowStyle Hidden -Wait
 ''';
     }
-    return r'''
-do shell script "kill $(cat '"$Dir"'/sing-box.pid) 2>/dev/null; rm -f '"$Dir"'/sing-box.pid" with administrator privileges
+    return macStopScript(dir);
+  }
+
+  /// macOS launch script content (written to the support dir, run as root).
+  static String macLaunchScript(String dir) {
+    final d = _sh(dir);
+    return '''
+#!/bin/sh
+cd $d || exit 1
+nohup ./sing-box run -D $d -c $d/config.json > $d/sing-box.log 2>&1 &
+echo \$! > $d/sing-box.pid
 ''';
+  }
+
+  /// macOS stop script content (written to the support dir, run as root).
+  static String macStopScript(String dir) {
+    final d = _sh(dir);
+    return '''
+#!/bin/sh
+if [ -f $d/sing-box.pid ]; then
+  kill \$(cat $d/sing-box.pid) 2>/dev/null
+  rm -f $d/sing-box.pid
+fi
+''';
+  }
+
+  /// POSIX single-quote a path for embedding in sh.
+  static String _sh(String p) => "'${p.replaceAll("'", "'\\''")}'";
+
+  /// Run a support-dir shell script as root via osascript.
+  static Future<ProcessResult> runMacScript(String scriptPath) async {
+    final s = _sh(scriptPath);
+    return Process.run(
+        'osascript', ['-e', 'do shell script "sh $s" with administrator privileges']);
   }
 
   static Future<bool> isElevated() async {

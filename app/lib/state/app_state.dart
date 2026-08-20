@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -171,11 +172,15 @@ class AppState extends ChangeNotifier {
         clashSecret: _clashSecret!,
       );
       _clash.setSecret(_clashSecret!);
-      await SingboxManager.start(configDir: dir);
+      final startResult = await SingboxManager.start(configDir: dir);
+      if (startResult.stderr.toString().trim().isNotEmpty) {
+        _log('core: ${startResult.stderr.toString().trim()}');
+      }
 
       final active = await _clash.waitForActive(const Duration(seconds: 20));
       if (active == null) {
-        throw StateError('sing-box started but no server came alive');
+        // Verbose failure: surface what the core actually wrote.
+        throw StateError('sing-box started but no server came alive\n${await _coreLogTail(dir)}');
       }
       _activeServer = active;
       setPhase(VpnPhase.connected);
@@ -337,6 +342,28 @@ class AppState extends ChangeNotifier {
 
       notifyListeners();
     });
+  }
+
+  /// Tail of sing-box.log (bounded read; log can grow large) for error
+  /// surfacing — the "it wasn't verbose" fix.
+  static Future<String> _coreLogTail(String dir) async {
+    final f = File('$dir${Platform.pathSeparator}sing-box.log');
+    if (!await f.exists()) return '(no sing-box.log yet)';
+    const maxBytes = 8192;
+    try {
+      final len = await f.length();
+      final raf = await f.open();
+      try {
+        final skip = len > maxBytes ? len - maxBytes : 0;
+        await raf.setPosition(skip);
+        final bytes = await raf.read(len > maxBytes ? maxBytes : len);
+        return utf8.decode(bytes, allowMalformed: true);
+      } finally {
+        await raf.close();
+      }
+    } catch (e) {
+      return '(could not read sing-box.log: $e)';
+    }
   }
 
   static String _randomSecret() {
