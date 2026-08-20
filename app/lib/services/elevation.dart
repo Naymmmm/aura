@@ -36,9 +36,12 @@ Write-Output "started $pidToWrite"
     // copied from the PowerShell path and left `$Dir` literal in AppleScript,
     // so macOS tried to launch from a directory named "$Dir".
     final q = _shellQuote(dir);
+    // `do shell script` is already non-interactive. macOS `nohup` tries to
+    // detach its non-existent console and exits with ENOTTY, preventing the
+    // core from ever starting. Background the process directly instead.
     final command =
-        'cd $q && nohup ./sing-box run -D $q -c $q/config.json '
-        '> $q/sing-box.log 2>&1 & echo \$! > $q/sing-box.pid';
+        'cd $q && ./sing-box run -D $q -c $q/config.json '
+        '</dev/null > $q/sing-box.log 2>&1 & echo \$! > $q/sing-box.pid';
     return 'do shell script ${_appleScriptString(command)} '
         'with administrator privileges';
   }
