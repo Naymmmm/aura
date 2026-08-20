@@ -133,6 +133,12 @@ const PAGE = `<!doctype html>
           <a id="relMacLink" href="/dl/latest-macos" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ mac</a>
         </div>
         <div id="relErr" class="err"></div>
+        <div class="row" style="margin-top:10px">
+          <input id="srcFile" type="file" accept=".zip,application/zip" style="flex:2">
+          <button id="srcBtn" class="ghost">Publish source</button>
+          <a id="srcLink" href="/dl/source" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ src</a>
+        </div>
+        <div id="srcErr" class="err"></div>
       </div>
 
       <div class="card" style="padding:0;overflow-x:auto">
@@ -420,6 +426,26 @@ const PAGE = `<!doctype html>
       else $('relErr').textContent = 'Upload failed: ' + (r.body && r.body.error || r.status);
     }).catch(function () { $('relErr').textContent = 'Network error.'; })
       .then(function () { b.disabled = false; b.textContent = 'Upload release'; });
+  });
+
+  /* ---------- source publish ---------- */
+  $('srcBtn').addEventListener('click', function () {
+    var f = $('srcFile').files[0];
+    if (!f) { $('srcErr').textContent = 'Pick a file first.'; return; }
+    var fd = new FormData();
+    fd.append('file', f, f.name);
+    fd.append('key', 'source');
+    var b = $('srcBtn');
+    b.disabled = true;
+    b.textContent = 'Publishing…';
+    $('srcErr').textContent = '';
+    fetch('/v1/admin/release', { method: 'POST', body: fd }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; });
+    }).then(function (r) {
+      if (r.ok) toast('Source live at ' + r.body.url);
+      else $('srcErr').textContent = 'Publish failed: ' + (r.body && r.body.error || r.status);
+    }).catch(function () { $('srcErr').textContent = 'Network error.'; })
+      .then(function () { b.disabled = false; b.textContent = 'Publish source'; });
   });
 
   /* ---------- boot ---------- */

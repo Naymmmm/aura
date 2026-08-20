@@ -29,12 +29,37 @@ infra/05-Bootstrap.ps1         Caddy+naiveproxy on all 3 servers
 
 ## App flow
 
-Aura → `GET api.copal.run/v1/config` (X-Copal-Secret header) → generate sing-box config
-(3 naive outbounds in urltest group, TUN + fakeip DNS) → run bundled sing-box elevated
-→ live latency/traffic via Clash API.
+Aura login (account id + token) → `POST api.copal.run/v1/session` (checks out rotating
+server creds) → generate sing-box config (3 naive outbounds in urltest group, TUN +
+fakeip DNS) → run bundled sing-box elevated → live latency/traffic via Clash API.
+
+## Downloads
+
+| Artifact | URL |
+|---|---|
+| Windows | `https://api.copal.run/dl/latest` |
+| macOS (Apple Silicon) | `https://api.copal.run/dl/latest-macos` |
+| Source | `https://api.copal.run/dl/source` |
+
+No account? Create one in the app — it stays disabled until an admin adds
+credit (days) to it.
+
+## The Rules
+
+1. **No illegal stuff.**
+2. **No piracy.**
+3. **No torrenting.**
+4. **Use your data wisely** (100 GB/month per account).
+5. **Pay on time.**
 
 ## Notes
 
 - Proxy records must stay **grey-cloud** (DNS only) — Cloudflare proxying would terminate TLS and break naive.
 - `prefer_ip` in the Worker KV payload switches the app to raw-IP connect if the domain ever gets DNS-poisoned.
 - Unsigned builds: Windows "More info → Run anyway", macOS right-click → Open.
+- Admin panel at `https://api.copal.run/admin`.
+
+## License
+
+Proprietary — see [LICENSE](LICENSE). All rights reserved; the compiled app is
+for personal use by authorized account holders only.

@@ -1,30 +1,33 @@
 # 06-AttachReservedIp.ps1 — rescue vpn1: attach reserved IP + open firewall.
 # vpn1 (→ romeo.api.copal.run) was discovered RUNNING but with NO public IP
 # and an empty NSG (inbound default-deny). This script:
-#   1. attaches the reserved public IP 161.33.78.49 to vpn1's VNIC
+#   1. attaches a reserved public IP to the vpn1 VNIC
 #   2. adds NSG ingress rules for TCP 22/80/443 + egress allow-all
 #   3. (no security-list changes needed — a VNIC with an NSG ignores subnet SLs)
 # Idempotent: safe to re-run.
 # Usage: pwsh -NoProfile -File infra/06-AttachReservedIp.ps1
+#
+# NOTE: OCIDs/IPs below are redacted in this public copy — fill in the
+# tenancy's values from OciHelpers if the rescue ever needs re-running.
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\OciHelpers.ps1"
 Ensure-Session
 
-$InstanceId = "ocid1.instance.oc1.ap-melbourne-1.anwwkljr6xkbtkqcir2vrgwxfojvgfotpc7dt5u62gpgetp54yuslkjg6nza"
-$ReservedIp = "ocid1.publicip.oc1.ap-melbourne-1.amaaaaaa6xkbtkqadsdav4rjyyfuj4rgwp62ziyiumuxiqgcvjesccsv5i5a"
-$NsgId      = "ocid1.networksecuritygroup.oc1.ap-melbourne-1.aaaaaaaa3atxnvbthtk3uwimvcpzlf3p4bf7msozf5ols7d3qqenyslvvyxa"
+$InstanceId = "ocid1.instance.oc1.ap-melbourne-1.<REDACTED>"
+$ReservedIp = "ocid1.publicip.oc1.ap-melbourne-1.<REDACTED>"
+$NsgId      = "ocid1.networksecuritygroup.oc1.ap-melbourne-1.<REDACTED>"
 
 # --- 1. Attach reserved IP (idempotent: skip if already attached) ---
 $vnicId = Oci compute instance list-vnics --instance-id $InstanceId --all --query 'data[0].id' --raw-output
 $curIp  = Oci compute instance list-vnics --instance-id $InstanceId --all --query 'data[0]."public-ip"' --raw-output
-if ($curIp -eq "161.33.78.49") {
-  Write-Host "Reserved IP already attached (161.33.78.49)" -ForegroundColor Green
+if ($curIp -eq "<REDACTED>") {
+  Write-Host "Reserved IP already attached (<REDACTED>)" -ForegroundColor Green
 } else {
   $SubnetId = Oci compute instance list-vnics --instance-id $InstanceId --all --query 'data[0]."subnet-id"' --raw-output
-  $privIp = Oci network private-ip list --subnet-id $SubnetId --ip-address "10.0.0.246" --query 'data[0].id' --raw-output
-  if (-not $privIp) { throw "private IP 10.0.0.246 not found in subnet $SubnetId" }
+  $privIp = Oci network private-ip list --subnet-id $SubnetId --ip-address "<REDACTED>" --query 'data[0].id' --raw-output
+  if (-not $privIp) { throw "private IP <REDACTED> not found in subnet $SubnetId" }
   Oci network public-ip update --public-ip-id $ReservedIp --private-ip-id $privIp --query 'data."ip-address"' --raw-output
-  Write-Host "Attached reserved IP 161.33.78.49 to vpn1" -ForegroundColor Green
+  Write-Host "Attached reserved IP <REDACTED> to vpn1" -ForegroundColor Green
 }
 
 # --- 2. NSG rules (add is incremental; skips exact duplicates) ---

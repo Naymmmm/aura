@@ -66,6 +66,7 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
 function dlName(key: string): string {
   if (key === 'latest') return 'aura-windows-amd64.zip';
   if (key === 'latest-macos') return 'aura-macos-arm64.zip';
+  if (key === 'source') return 'aura-source.zip';
   return 'aura-release.zip';
 }
 
