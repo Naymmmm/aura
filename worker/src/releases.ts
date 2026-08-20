@@ -5,8 +5,9 @@ import { json } from './util';
 import type { Env } from './util';
 
 // POST /v1/admin/release — multipart: form field "file", optional "key"
-// (default "latest", e.g. "latest-macos" for other platforms).
-// cookie-gated in admin.ts.
+// (default "latest", e.g. "latest-macos" for other platforms), optional
+// "version" (e.g. "v0.2.4", sanitized; defaults to a timestamp stamp).
+// cookie-gated in admin.ts. Stores meta:<key> for the auto-updater.
 export async function handleRelease(req: Request, env: Env): Promise<Response> {
   const cl = Number(req.headers.get('content-length') ?? '0');
   if (cl > 95 * 1024 * 1024) return json({ error: 'too_large' }, 413); // free-plan body cap ~100MB
@@ -20,16 +21,41 @@ export async function handleRelease(req: Request, env: Env): Promise<Response> {
   if (!(file instanceof File)) return json({ error: 'bad_request' }, 400);
   let key = String(fd.get('key') ?? 'latest');
   if (!/^[a-z0-9-]{1,32}$/.test(key)) key = 'latest';
+  const rawVersion = String(fd.get('version') ?? '');
+  const version = /^[A-Za-z0-9._-]{1,32}$/.test(rawVersion) ? rawVersion : stampNow();
 
   await env.RELEASES.put(key, file);
   await env.RELEASES.put(key === 'latest' ? 'aura-' + stampNow() + '.zip' : `aura-${stampNow()}-${key}.zip`, file);
+
+  // sha256 computed here (once per upload) so the app can verify downloads.
+  const hash = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  const sha256 = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await env.RELEASES.put(
+    'meta:' + key,
+    JSON.stringify({ version, sha256, size: file.size, uploaded: Date.now() })
+  );
 
   // keep only the newest 5 versioned copies
   const listed = await env.RELEASES.list({ prefix: 'aura-' });
   const stale = listed.objects.sort((a, b) => b.uploaded - a.uploaded).slice(5);
   for (const o of stale) await env.RELEASES.delete(o.key);
 
-  return json({ key, url: `https://api.copal.run/dl/${key}`, size: file.size }, 200);
+  return json({ key, url: `https://api.copal.run/dl/${key}`, size: file.size, version, sha256 }, 200);
+}
+
+// GET /v1/release/meta?key=latest|latest-macos|source — version + sha256 for
+// the app's auto-updater. Public (downloads are public too).
+export async function serveReleaseMeta(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  const key = url.searchParams.get('key') ?? 'latest';
+  if (!/^[a-z0-9-]{1,32}$/.test(key)) return json({ error: 'not found' }, 404);
+  const obj = await env.RELEASES.get('meta:' + key);
+  if (!obj) return json({ error: 'not found' }, 404);
+  try {
+    return json(JSON.parse(await obj.text()), 200);
+  } catch {
+    return json({ error: 'not found' }, 404);
+  }
 }
 
 // GET /dl/{key} — public

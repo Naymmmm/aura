@@ -128,6 +128,7 @@ const PAGE = `<!doctype html>
       <div class="card">
         <div class="row">
           <input id="relFile" type="file" accept=".zip,application/zip" style="flex:2">
+          <input id="relVer" type="text" placeholder="version (e.g. v0.2.4)" style="max-width:130px" title="version for the auto-updater">
           <button id="relBtn">Upload release</button>
           <a id="relLink" href="/dl/latest" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ win</a>
           <a id="relMacLink" href="/dl/latest-macos" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ mac</a>
@@ -255,9 +256,10 @@ const PAGE = `<!doctype html>
     });
   }
 
-  function pill(disabled, expired, past) {
+  function pill(disabled, expired, noCredit, past) {
     if (disabled) return '<span class="pill bad">disabled</span>';
     if (expired) return '<span class="pill bad">expired</span>';
+    if (noCredit) return '<span class="pill warn">no credit</span>';
     if (past) return '<span class="pill warn">' + past + 'd left</span>';
     return '<span class="pill ok">active</span>';
   }
@@ -282,6 +284,15 @@ const PAGE = `<!doctype html>
 
       var tdName = document.createElement('td');
       tdName.textContent = a.name;
+      if (a.source === 'self') {
+        var src = document.createElement('span');
+        src.className = 'pill'; // reuse pill styling; textContent = safe
+        src.style.fontSize = '10px';
+        src.style.marginLeft = '6px';
+        src.style.verticalAlign = '1px';
+        src.textContent = 'self';
+        tdName.appendChild(src);
+      }
 
       var tdId = document.createElement('td');
       tdId.className = 'mono';
@@ -299,7 +310,7 @@ const PAGE = `<!doctype html>
       tdBudget.textContent = String(a.budget_gb) + ' GB';
 
       var tdStatus = document.createElement('td');
-      tdStatus.innerHTML = pill(!!a.disabled, a.expires_at <= now, past); // static strings only
+      tdStatus.innerHTML = pill(!!a.disabled, a.expires_at <= now, a.expires_at === 0, past); // static strings only
 
       var tdLive = document.createElement('td');
       tdLive.textContent = String(a.active_sessions);
@@ -415,6 +426,8 @@ const PAGE = `<!doctype html>
     if (!f) { $('relErr').textContent = 'Pick a file first.'; return; }
     var fd = new FormData();
     fd.append('file', f, f.name);
+    var ver = $('relVer').value.trim();
+    if (ver) fd.append('version', ver);
     var b = $('relBtn');
     b.disabled = true;
     b.textContent = 'Uploading…';

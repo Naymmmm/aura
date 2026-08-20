@@ -4,12 +4,14 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../models/server_info.dart';
 import '../services/clash_api.dart';
 import '../services/config_generator.dart';
 import '../services/session_service.dart';
 import '../services/singbox_manager.dart';
+import '../services/update_service.dart';
 import '../services/usage_tracker.dart';
 
 enum VpnPhase { loggedOut, disconnected, fetchingConfig, connecting, connected, error }
@@ -21,6 +23,14 @@ class AppState extends ChangeNotifier {
 
   final SessionService _sessionService;
   final ClashApi _clash = ClashApi();
+
+  // ---- auto-update state (checked on launch, downloaded on demand) ----
+  String? _updateVersion; // non-null = newer release available
+  String? get updateVersion => _updateVersion;
+  bool _updating = false; // download/extract in flight
+  bool get updating => _updating;
+  bool _updateStaged = false; // verified + extracted, waiting for install
+  bool get updateStaged => _updateStaged;
 
   VpnPhase _phase = VpnPhase.loggedOut;
   VpnPhase get phase => _phase;
@@ -97,6 +107,67 @@ class AppState extends ChangeNotifier {
       _log('welcome back — account found on disk');
     } else {
       setPhase(VpnPhase.loggedOut);
+    }
+    unawaited(checkForUpdate()); // silent; never blocks startup
+  }
+
+  /// Quietly asks the worker whether a newer release exists. Failures are
+  /// logged and ignored — the app must work offline.
+  Future<void> checkForUpdate() async {
+    try {
+      final v = await UpdateService().checkForUpdate();
+      if (v != null && v != _updateVersion) {
+        _updateVersion = v;
+        _log('update available: $v — installing is one click away');
+        notifyListeners();
+      }
+    } catch (e) {
+      _log('update check failed: $e');
+    }
+  }
+
+  /// Downloads + verifies + extracts the new release. [UpdateService.stage]
+  /// refuses on checksum mismatch, so a failed install can never run.
+  Future<bool> downloadUpdate() async {
+    final v = _updateVersion;
+    if (v == null || _updating) return false;
+    _updating = true;
+    notifyListeners();
+    try {
+      await UpdateService().stage(v);
+      _updateStaged = true;
+      _log('update $v staged — restart to install');
+      return true;
+    } catch (e) {
+      _log('update failed: $e');
+      return false;
+    } finally {
+      _updating = false;
+      notifyListeners();
+    }
+  }
+
+  /// Swaps the staged release in and relaunches; the caller should exit
+  /// immediately after (the updater waits for this process to die).
+  Future<void> installUpdate() async {
+    final stageDir =
+        '${(await getApplicationSupportDirectory()).path}${Platform.pathSeparator}aura-update';
+    try {
+      await UpdateService().applyAndRestart(stageDir);
+    } catch (e) {
+      _log('install failed: $e');
+      notifyListeners();
+    }
+  }
+
+  /// Self-service signup: creates an account with zero credit (dead until
+  /// the admin adds days). Returns the shown-once creds, or null on failure.
+  Future<({String accountId, String token})?> signup(String name) async {
+    try {
+      return await _sessionService.signup(name);
+    } on SessionException catch (e) {
+      _authError = e.kind;
+      return null;
     }
   }
 
@@ -193,6 +264,7 @@ class AppState extends ChangeNotifier {
       if (e.kind == AuthErrorKind.badCreds ||
           e.kind == AuthErrorKind.accountExpired ||
           e.kind == AuthErrorKind.accountDisabled ||
+          e.kind == AuthErrorKind.noCredit ||
           e.kind == AuthErrorKind.sessionGone) {
         _authError = e.kind;
         _session = null;
@@ -262,6 +334,7 @@ class AppState extends ChangeNotifier {
       if (e.kind == AuthErrorKind.badCreds ||
           e.kind == AuthErrorKind.accountExpired ||
           e.kind == AuthErrorKind.accountDisabled ||
+          e.kind == AuthErrorKind.noCredit ||
           e.kind == AuthErrorKind.sessionGone) {
         _authError = e.kind;
         _session = null;

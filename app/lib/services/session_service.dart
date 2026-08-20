@@ -11,6 +11,7 @@ enum AuthErrorKind {
   badCreds, // 401 — wrong account id or token
   accountExpired, // 403 — account past its expiry
   accountDisabled, // 403 — admin disabled the account
+  noCredit, // 403 no_credit — self-served account, admin hasn't added days yet
   poolExhausted, // 503 — no free cred pairs right now
   sessionGone, // 410 — session no longer alive (expired server-side)
   network, // timeout / unreachable
@@ -115,9 +116,11 @@ class SessionService {
       case 401:
         throw SessionException(AuthErrorKind.badCreds);
       case 403:
-        throw SessionException(resp.body.contains('disabled')
-            ? AuthErrorKind.accountDisabled
-            : AuthErrorKind.accountExpired);
+        throw SessionException(resp.body.contains('no_credit')
+            ? AuthErrorKind.noCredit
+            : resp.body.contains('disabled')
+                ? AuthErrorKind.accountDisabled
+                : AuthErrorKind.accountExpired);
       case 503:
         throw SessionException(AuthErrorKind.poolExhausted);
       default:
@@ -147,6 +150,31 @@ class SessionService {
           .delete(Uri.parse('$_apiBase/v1/session/$sessionId'))
           .timeout(const Duration(seconds: 15));
     } catch (_) {}
+  }
+
+  /// POST /v1/signup — self-service account creation. The account is created
+  /// with zero credit and can't open sessions until an admin adds days.
+  /// Returns the id + token (shown once). Throws [SessionException] with
+  /// network kind on failure.
+  Future<({String accountId, String token})> signup(String name) async {
+    http.Response resp;
+    try {
+      resp = await http
+          .post(
+            Uri.parse('$_apiBase/v1/signup'),
+            headers: {'content-type': 'application/json', 'accept': 'application/json'},
+            body: jsonEncode({'name': name}),
+          )
+          .timeout(const Duration(seconds: 20));
+    } catch (_) {
+      throw SessionException(AuthErrorKind.network);
+    }
+    if (resp.statusCode != 200) throw SessionException(AuthErrorKind.network);
+    final j = jsonDecode(resp.body) as Map<String, dynamic>;
+    final id = j['account_id'] as String?;
+    final token = j['token'] as String?;
+    if (id == null || token == null) throw SessionException(AuthErrorKind.network);
+    return (accountId: id, token: token);
   }
 
   /// Forget the saved account creds (logout).
