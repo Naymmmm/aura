@@ -14,22 +14,66 @@ class Elevation {
   /// Scripts are written next to the sing-box dir by [SingboxManager].
   static String startScript(String dir) {
     if (Platform.isWindows) {
-      // -Verb RunAs triggers the UAC prompt; -PassThru gives us the elevated PID.
+      // Elevate this script once, then validate the config, retire only our
+      // previous PID, start the core, and prove it survived startup. Running
+      // sing-box directly with -Verb RunAs returned before early core exits,
+      // which made the app misleadingly say it had started.
       return r'''
-param([string]$Dir)
+param([string]$Dir, [switch]$Elevated)
+
+if (-not $Elevated) {
+  $argLine = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+    $PSCommandPath.Replace('"', '""') + '" -Dir "' +
+    $Dir.Replace('"', '""') + '" -Elevated'
+  try {
+    $admin = Start-Process powershell.exe -ArgumentList $argLine `
+      -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+    exit $admin.ExitCode
+  } catch {
+    Write-Error "Administrator approval was cancelled or failed: $_"
+    exit 2
+  }
+}
+
 $exe = Join-Path $Dir 'sing-box.exe'
 if (-not (Test-Path $exe)) { Write-Error "sing-box.exe not found: $exe"; exit 1 }
+$config = Join-Path $Dir 'config.json'
+$pidFile = Join-Path $Dir 'sing-box.pid'
+$logFile = Join-Path $Dir 'sing-box.log'
+
+# Stop only the process recorded by Aura, and only when its executable path
+# matches this installation. Never taskkill every sing-box instance.
+if (Test-Path $pidFile) {
+  $oldPid = Get-Content $pidFile -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($oldPid -match '^\d+$') {
+    $old = Get-Process -Id ([int]$oldPid) -ErrorAction SilentlyContinue
+    if ($old -and $old.Path -eq $exe) { Stop-Process -Id ([int]$oldPid) -Force }
+  }
+  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+}
+
+$check = & $exe check -D $Dir -c $config 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "sing-box config check failed: $check"
+  exit 3
+}
+
+$quotedDir = '"' + $Dir + '"'
+$quotedConfig = '"' + $config + '"'
 $p = Start-Process -FilePath $exe `
-  -ArgumentList @('run','-D',"$Dir",'-c',(Join-Path $Dir 'config.json')) `
-  -WorkingDirectory $Dir -Verb RunAs -WindowStyle Hidden -PassThru
-if ($null -eq $p) { Write-Error 'UAC cancelled or failed'; exit 2 }
-# -Verb RunAs can hand back the shell's pid, not sing-box's — resolve the real one.
-Start-Sleep -Milliseconds 500
-$real = Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue |
-  Sort-Object StartTime -Descending | Select-Object -First 1
-$pidToWrite = if ($real) { $real.Id } else { $p.Id }
-$pidToWrite | Out-File -Encoding ascii (Join-Path $Dir 'sing-box.pid')
-Write-Output "started $pidToWrite"
+  -ArgumentList @('run','-D',$quotedDir,'-c',$quotedConfig) `
+  -WorkingDirectory $Dir -WindowStyle Hidden -PassThru
+$p.Id | Out-File -Encoding ascii $pidFile
+Start-Sleep -Milliseconds 1200
+$p.Refresh()
+if ($p.HasExited) {
+  $tail = if (Test-Path $logFile) { Get-Content $logFile -Tail 20 } else { 'no log created' }
+  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+  Write-Error "sing-box exited during startup ($($p.ExitCode)): $tail"
+  exit 4
+}
+Write-Output "started $($p.Id)"
 ''';
     }
     // macOS: shell scripts written next to the config (real paths baked in at
@@ -43,11 +87,33 @@ Write-Output "started $pidToWrite"
   static String stopScript(String dir) {
     if (Platform.isWindows) {
       return r'''
-param([string]$Dir)
+param([string]$Dir, [switch]$Elevated)
+
+if (-not $Elevated) {
+  $argLine = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+    $PSCommandPath.Replace('"', '""') + '" -Dir "' +
+    $Dir.Replace('"', '""') + '" -Elevated'
+  try {
+    $admin = Start-Process powershell.exe -ArgumentList $argLine `
+      -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+    exit $admin.ExitCode
+  } catch {
+    Write-Error "Administrator approval was cancelled or failed: $_"
+    exit 2
+  }
+}
+
 $pidFile = Join-Path $Dir 'sing-box.pid'
-if (Test-Path $pidFile) { Remove-Item $pidFile -Force }
-# Kill by image name: pid bookkeeping can miss the real (child) process.
-Start-Process taskkill -ArgumentList @('/IM','sing-box.exe','/T','/F') -Verb RunAs -WindowStyle Hidden -Wait
+$exe = Join-Path $Dir 'sing-box.exe'
+if (Test-Path $pidFile) {
+  $oldPid = Get-Content $pidFile -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($oldPid -match '^\d+$') {
+    $old = Get-Process -Id ([int]$oldPid) -ErrorAction SilentlyContinue
+    if ($old -and $old.Path -eq $exe) { Stop-Process -Id ([int]$oldPid) -Force }
+  }
+  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+}
 ''';
     }
     return macStopScript(dir);

@@ -2,6 +2,7 @@
   "log": { "level": "info", "timestamp": true, "output": "sing-box.log" },
   "dns": {
     "independent_cache": true,
+    "strategy": "ipv4_only",
     "servers": [
       { "type": "https", "tag": "remote", "server": "1.1.1.1" },
       { "type": "local", "tag": "local" },
@@ -57,6 +58,7 @@
       "server_port": 443,
       "username": "{{MERCUTIO_USER}}",
       "password": "{{MERCUTIO_PASS}}",
+      "insecure_concurrency": 2,
       "tls": { "enabled": true, "server_name": "mercutio.api.copal.run" },
       "udp_over_tcp": {}
     },

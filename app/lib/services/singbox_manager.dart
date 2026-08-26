@@ -31,7 +31,10 @@ class SingboxManager {
     final exeName = Platform.isWindows ? 'sing-box.exe' : 'sing-box';
     final installed = File(_p(d, exeName));
     final verFile = File(_p(d, 'version'));
+    final dependenciesReady = !Platform.isWindows ||
+        File(_p(d, 'libcronet.dll')).existsSync();
     final haveCore = installed.existsSync() &&
+        dependenciesReady &&
         verFile.existsSync() &&
         verFile.readAsStringSync().trim() == version;
     // Heal executable permissions and quarantine on every launch, even when
@@ -90,13 +93,20 @@ class SingboxManager {
     final args = ['run', '-D', d, '-c', _p(d, 'config.json')];
 
     final ProcessResult result;
-    if (await Elevation.isElevated()) {
-      // Already elevated: run directly.
-      result = await Process.run(exe, args);
-    } else if (Platform.isWindows) {
+    if (Platform.isWindows) {
+      // Always use the supervisor script. If Aura itself was launched as
+      // administrator, Process.run(exe, args) would wait forever for the VPN
+      // daemon to exit and leave the UI stuck on Connecting.
+      final elevated = await Elevation.isElevated();
       final script = File(_p(d, 'elevate-start.ps1'));
       await script.writeAsString(Elevation.startScript(d));
-      result = await Elevation.runScript(script.path, ['-Dir', d]);
+      result = await Elevation.runScript(
+        script.path,
+        ['-Dir', d, if (elevated) '-Elevated'],
+      );
+    } else if (await Elevation.isElevated()) {
+      // Already elevated: run directly.
+      result = await Process.run(exe, args);
     } else {
       // macOS: script with real paths baked in; run as root via osascript.
       final script = File(_p(d, 'sing-box-start.sh'));
@@ -107,10 +117,6 @@ class SingboxManager {
     if (result.exitCode != 0) {
       final err = (result.stderr ?? result.stdout).toString().trim();
       throw StateError('sing-box failed to start (exit ${result.exitCode}): $err');
-    }
-    if (Platform.isWindows && !await Elevation.isElevated()) {
-      // Wait a moment for the pid file; UAC path can race.
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
     }
     return result;
   }
