@@ -15,6 +15,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate PowerShell deployment scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem infra -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -43,6 +58,10 @@ jobs:
             Copy-Item "$dir\w\wintun\bin\amd64\wintun.dll" "$dir"
           }
           echo "SB_DIR=$dir" >> $env:GITHUB_ENV
+
+      - name: Validate client tunnel config
+        shell: pwsh
+        run: '& "$env:SB_DIR\sing-box.exe" check -c app/assets/singbox.template.json'
 
       - run: flutter pub get
         working-directory: app

@@ -39,7 +39,7 @@
       "username": "{{ROMEO_USER}}",
       "password": "{{ROMEO_PASS}}",
       "tls": { "enabled": true, "server_name": "romeo.api.copal.run" },
-      "udp_over_tcp": {}
+      "udp_over_tcp": { "enabled": true, "version": 2 }
     },
     {
       "type": "naive",
@@ -49,7 +49,7 @@
       "username": "{{JULIET_USER}}",
       "password": "{{JULIET_PASS}}",
       "tls": { "enabled": true, "server_name": "juliet.api.copal.run" },
-      "udp_over_tcp": {}
+      "udp_over_tcp": { "enabled": true, "version": 2 }
     },
     {
       "type": "naive",
@@ -60,7 +60,7 @@
       "password": "{{MERCUTIO_PASS}}",
       "insecure_concurrency": 2,
       "tls": { "enabled": true, "server_name": "mercutio.api.copal.run" },
-      "udp_over_tcp": {}
+      "udp_over_tcp": { "enabled": true, "version": 2 }
     },
     {
       "type": "urltest",

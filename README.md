@@ -25,6 +25,7 @@ infra/02-EnsureCapacity.ps1    resize VPN1 if it eats the free pool
 infra/03-NewServers.ps1        launch juliet + mercutio → ips.txt
 infra/04-CloudflareDns.ps1     grey A records (proxies) + orange api record
 infra/05-Bootstrap.ps1         Caddy+naiveproxy on all 3 servers
+infra/07-EnableUdpOverTcp.ps1  migrate servers to sing-box Naive for encrypted UDP-over-TCP v2
 ```
 
 ## App flow
