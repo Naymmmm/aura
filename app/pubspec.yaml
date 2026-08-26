@@ -2,7 +2,7 @@ name: aura
 description: "Aura — DPI-resistant VPN with aura. sing-box TUN + NaiveProxy."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 0.2.5+5
 
 environment:
   sdk: ^3.12.2

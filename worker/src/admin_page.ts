@@ -128,7 +128,7 @@ const PAGE = `<!doctype html>
       <div class="card">
         <div class="row">
           <input id="relFile" type="file" accept=".zip,application/zip" style="flex:2">
-          <input id="relVer" type="text" placeholder="version (e.g. v0.2.4)" style="max-width:130px" title="version for the auto-updater">
+          <input id="relVer" type="text" placeholder="version (e.g. v0.2.5)" style="max-width:130px" title="version for the auto-updater">
           <button id="relBtn">Upload release</button>
           <a id="relLink" href="/dl/latest" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ win</a>
           <a id="relMacLink" href="/dl/latest-macos" target="_blank" rel="noopener" class="ghost" style="text-decoration:none;padding:10px 16px;border-radius:8px;border:1px solid var(--line);color:var(--dim);font-size:13px;white-space:nowrap">↗ mac</a>
