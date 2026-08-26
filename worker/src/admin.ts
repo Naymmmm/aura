@@ -159,6 +159,7 @@ async function listAccounts(env: Env): Promise<Response> {
     expires_at: a.expires_at,
     budget_gb: a.budget_gb,
     disabled: !!a.disabled,
+    source: a.source ?? 'admin',
     active_sessions: sessionCounts[a.id] ?? 0,
   }));
   list.sort((a, b) => a.created_at - b.created_at);

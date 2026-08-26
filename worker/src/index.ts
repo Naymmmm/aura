@@ -1,19 +1,21 @@
 // copal-api — central config API for the Aura VPN.
 // GET  /healthz                  → public liveness
 // GET  /v1/config                → server list + credentials (X-Copal-Secret)
+// POST /v1/signup                → public self-service account (no credit)
 // POST /v1/session               → account login, cred-pool checkout
 // POST /v1/session/{id}/heartbeat → keep session alive
 // DELETE /v1/session/{id}        → release session
+// GET  /v1/release/meta?key=     → {version, sha256, size} for the auto-updater
 // GET  /admin                    → admin panel HTML
 // /v1/admin/...                  → admin API (login/logout/me/accounts/release)
 // GET  /dl/{key}                 → public release download
 
 import { json, HDRS, safeEqual } from './util';
 import type { Env } from './util';
-import { handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
+import { handleOpenSession, handleHeartbeat, handleCloseSession, handleSignup } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
-import { serveDownload } from './releases';
+import { serveDownload, serveReleaseMeta } from './releases';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -21,6 +23,16 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: HDRS });
     if (url.pathname === '/healthz') return new Response('ok');
     if (url.pathname === '/v1/config') return serveConfig(req, env);
+
+    if (url.pathname === '/v1/signup') {
+      if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      return handleSignup(req, env);
+    }
+
+    if (url.pathname === '/v1/release/meta') {
+      if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
+      return serveReleaseMeta(req, env);
+    }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
     if (sessMatch) return serveSession(req, env, sessMatch[1], sessMatch[2]);

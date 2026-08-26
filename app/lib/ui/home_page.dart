@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
@@ -106,6 +108,12 @@ class _Header extends StatelessWidget {
           const SizedBox(width: 10),
           Text('AURA', style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900, letterSpacing: 2)),
           const Spacer(),
+          // Auto-update: chip → download+verify → install (swap + relaunch).
+          if (state.updateVersion != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: _UpdateChip(state: state),
+            ),
           IconButton(
             tooltip: 'log out',
             onPressed: state.logout,
@@ -338,4 +346,61 @@ String _fmtBytes(int n) {
   if (n >= 1 << 20) return '${(n / (1 << 20)).toStringAsFixed(1)} MB';
   if (n >= 1 << 10) return '${(n / (1 << 10)).toStringAsFixed(0)} KB';
   return '$n B';
+}
+
+/// Auto-update chip: shows when a newer release exists. Tap → download +
+/// verify (checksum gate), then a second tap installs (swap + relaunch).
+class _UpdateChip extends StatelessWidget {
+  const _UpdateChip({required this.state});
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final updating = state.updating;
+    final staged = state.updateStaged;
+    final label = staged
+        ? 'restart to install'
+        : updating
+            ? 'fetching…'
+            : '⬆ ${state.updateVersion}';
+    return Material(
+      color: theme.colorScheme.primary.withValues(alpha: 0.15),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () {
+          if (updating) return;
+          if (staged) {
+            state.installUpdate();
+            // The updater script waits for this process to die, swaps the
+            // files and relaunches the new build.
+            exit(0);
+          } else {
+            state.downloadUpdate();
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (updating)
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Icon(Icons.system_update_alt, size: 14, color: theme.colorScheme.primary),
+              const SizedBox(width: 6),
+              Text(label,
+                  style: theme.textTheme.labelMedium
+                      ?.copyWith(color: theme.colorScheme.primary)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -31,6 +31,21 @@ class AuraLines {
     'your aura has been suspended. check with the admin',
   ];
 
+  static const noCredit = [
+    'account created but no credit yet — the admin has to add days first',
+    'your account exists but it has no aura yet. wait for the admin to add credit',
+    'no credit loaded. the admin will unlock you. be patient king',
+  ];
+
+  /// The Rules — shown on the login screen. Set by the owner. Non-negotiable.
+  static const rules = [
+    'No illegal stuff',
+    'No piracy',
+    'No torrenting',
+    'Use your data wisely',
+    'Pay on time',
+  ];
+
   static const poolExhausted = [
     'the cred pool is empty rn. try again in a bit',
     'all creds are leased. the aura is busy. retry king',
@@ -50,6 +65,8 @@ class AuraLines {
         return pick(accountExpired);
       case AuthErrorKind.accountDisabled:
         return pick(accountDisabled);
+      case AuthErrorKind.noCredit:
+        return pick(noCredit);
       case AuthErrorKind.poolExhausted:
         return pick(poolExhausted);
       case AuthErrorKind.sessionGone:

@@ -32,18 +32,12 @@ $pidToWrite | Out-File -Encoding ascii (Join-Path $Dir 'sing-box.pid')
 Write-Output "started $pidToWrite"
 ''';
     }
-    // macOS: use a fully-expanded, quoted command. The previous script was
-    // copied from the PowerShell path and left `$Dir` literal in AppleScript,
-    // so macOS tried to launch from a directory named "$Dir".
-    final q = _shellQuote(dir);
-    // `do shell script` is already non-interactive. macOS `nohup` tries to
-    // detach its non-existent console and exits with ENOTTY, preventing the
-    // core from ever starting. Background the process directly instead.
-    final command =
-        'cd $q && ./sing-box run -D $q -c $q/config.json '
-        '</dev/null > $q/sing-box.log 2>&1 & echo \$! > $q/sing-box.pid';
-    return 'do shell script ${_appleScriptString(command)} '
-        'with administrator privileges';
+    // macOS: shell scripts written next to the config (real paths baked in at
+    // write time); osascript runs them as root. AppleScript does not
+    // interpolate shell variables, so paths must never be passed through
+    // "do shell script" as $VARS — they die the same way every one of these
+    // posts ends up broken.
+    return macLaunchScript(dir);
   }
 
   static String stopScript(String dir) {
@@ -56,21 +50,41 @@ if (Test-Path $pidFile) { Remove-Item $pidFile -Force }
 Start-Process taskkill -ArgumentList @('/IM','sing-box.exe','/T','/F') -Verb RunAs -WindowStyle Hidden -Wait
 ''';
     }
-    final q = _shellQuote(dir);
-    final command =
-        'if [ -f $q/sing-box.pid ]; then kill "\$(cat $q/sing-box.pid)" '
-        '2>/dev/null || true; fi; rm -f $q/sing-box.pid';
-    return 'do shell script ${_appleScriptString(command)} '
-        'with administrator privileges';
+    return macStopScript(dir);
   }
 
-  /// A POSIX shell word, safe for a path controlled by the app sandbox.
-  static String _shellQuote(String value) =>
-      "'${value.replaceAll("'", "'\"'\"'")}'";
+  /// macOS launch script content (written to the support dir, run as root).
+  static String macLaunchScript(String dir) {
+    final d = _sh(dir);
+    return '''
+#!/bin/sh
+cd $d || exit 1
+./sing-box run -D $d -c $d/config.json </dev/null > $d/sing-box.log 2>&1 &
+echo \$! > $d/sing-box.pid
+''';
+  }
 
-  /// A double-quoted AppleScript string literal.
-  static String _appleScriptString(String value) =>
-      '"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"';
+  /// macOS stop script content (written to the support dir, run as root).
+  static String macStopScript(String dir) {
+    final d = _sh(dir);
+    return '''
+#!/bin/sh
+if [ -f $d/sing-box.pid ]; then
+  kill \$(cat $d/sing-box.pid) 2>/dev/null
+  rm -f $d/sing-box.pid
+fi
+''';
+  }
+
+  /// POSIX single-quote a path for embedding in sh.
+  static String _sh(String p) => "'${p.replaceAll("'", "'\\''")}'";
+
+  /// Run a support-dir shell script as root via osascript.
+  static Future<ProcessResult> runMacScript(String scriptPath) async {
+    final s = _sh(scriptPath);
+    return Process.run(
+        'osascript', ['-e', 'do shell script "sh $s" with administrator privileges']);
+  }
 
   static Future<bool> isElevated() async {
     if (Platform.isWindows) {

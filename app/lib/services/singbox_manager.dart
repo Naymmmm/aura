@@ -24,15 +24,23 @@ class SingboxManager {
       '$dir${Platform.pathSeparator}$name';
 
   /// First run: copy the bundled sing-box (next to the exe) into the support
-  /// dir so config/log paths live in a writable location.
+  /// dir so config/log paths live in a writable location. Re-copies whenever
+  /// the shipped version marker differs (upgrade).
   static Future<void> ensureBinary() async {
     final d = await dir;
     final exeName = Platform.isWindows ? 'sing-box.exe' : 'sing-box';
     final installed = File(_p(d, exeName));
-    if (installed.existsSync()) {
-      if (Platform.isMacOS) await Process.run('chmod', ['755', installed.path]);
-      return;
+    final verFile = File(_p(d, 'version'));
+    final haveCore = installed.existsSync() &&
+        verFile.existsSync() &&
+        verFile.readAsStringSync().trim() == version;
+    // Heal executable permissions and quarantine on every launch, even when
+    // the bundled core is already at the expected version.
+    if (haveCore && Platform.isMacOS) {
+      await Process.run('chmod', ['755', installed.path]);
+      await _stripQuarantine(d);
     }
+    if (haveCore) return;
 
     await Directory(d).create(recursive: true);
     final bundleDir = _bundleDir();
@@ -52,7 +60,17 @@ class SingboxManager {
       }
     }
     // Mark the dir with its version so future upgrades re-copy.
-    File(_p(d, 'version')).writeAsStringSync(version);
+    verFile.writeAsStringSync(version);
+
+    if (Platform.isMacOS) await _stripQuarantine(d);
+  }
+
+  /// macOS: downloaded zips carry com.apple.quarantine; Gatekeeper silently
+  /// SIGKILLs the quarantined core ("Killed: 9" in sing-box.log, app sees
+  /// "no server came alive"). Strip it from our own support dir. Runs on
+  /// every launch — idempotent, and heals cores copied by older builds.
+  static Future<void> _stripQuarantine(String d) async {
+    await Process.run('xattr', ['-dr', 'com.apple.quarantine', d]);
   }
 
   /// The bundled sing-box dir lives next to the app executable.
@@ -63,29 +81,45 @@ class SingboxManager {
     return Directory(candidate).existsSync() ? candidate : null;
   }
 
-  /// Start sing-box elevated. Returns the command result.
+  /// Start sing-box elevated. Throws with the real error when the core
+  /// cannot start — "not verbose" was the bug before.
   static Future<ProcessResult> start({required String configDir}) async {
     await ensureBinary();
     final d = configDir;
     final exe = _p(d, Platform.isWindows ? 'sing-box.exe' : 'sing-box');
     final args = ['run', '-D', d, '-c', _p(d, 'config.json')];
 
+    final ProcessResult result;
     if (await Elevation.isElevated()) {
       // Already elevated: run directly.
-      return Process.run(exe, args);
-    }
-    if (Platform.isWindows) {
+      result = await Process.run(exe, args);
+    } else if (Platform.isWindows) {
       final script = File(_p(d, 'elevate-start.ps1'));
       await script.writeAsString(Elevation.startScript(d));
-      return Elevation.runScript(script.path, ['-Dir', d]);
+      result = await Elevation.runScript(script.path, ['-Dir', d]);
+    } else {
+      // macOS: script with real paths baked in; run as root via osascript.
+      final script = File(_p(d, 'sing-box-start.sh'));
+      await script.writeAsString(Elevation.macLaunchScript(d));
+      result = await Elevation.runMacScript(script.path);
     }
-    final osa = Elevation.startScript(d);
-    return Process.run('osascript', ['-e', osa]);
+
+    if (result.exitCode != 0) {
+      final err = (result.stderr ?? result.stdout).toString().trim();
+      throw StateError('sing-box failed to start (exit ${result.exitCode}): $err');
+    }
+    if (Platform.isWindows && !await Elevation.isElevated()) {
+      // Wait a moment for the pid file; UAC path can race.
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+    }
+    return result;
   }
 
-  /// Stop sing-box (elevated taskkill).
+  /// Stop sing-box (elevated taskkill / root kill). Throws when elevation
+  /// itself fails so the app can say what happened.
   static Future<ProcessResult> stop({required String configDir}) async {
     final d = configDir;
+    final ProcessResult result;
     if (Platform.isWindows) {
       if (await Elevation.isElevated()) {
         final pidFile = File(_p(d, 'sing-box.pid'));
@@ -98,10 +132,18 @@ class SingboxManager {
       }
       final script = File(_p(d, 'elevate-stop.ps1'));
       await script.writeAsString(Elevation.stopScript(d));
-      return Elevation.runScript(script.path, ['-Dir', d]);
+      result = await Elevation.runScript(script.path, ['-Dir', d]);
+    } else {
+      final script = File(_p(d, 'sing-box-stop.sh'));
+      await script.writeAsString(Elevation.macStopScript(d));
+      result = await Elevation.runMacScript(script.path);
     }
-    final osa = Elevation.stopScript(d);
-    return Process.run('osascript', ['-e', osa]);
+
+    if (result.exitCode != 0) {
+      final err = (result.stderr ?? result.stdout).toString().trim();
+      throw StateError('could not stop sing-box (exit ${result.exitCode}): $err');
+    }
+    return result;
   }
 
   static Future<bool> isRunning(String configDir) async {
