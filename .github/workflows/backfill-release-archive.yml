@@ -1,0 +1,65 @@
+name: Backfill Aura release archive
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Upload historical releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          upload_release() {
+            local version="$1"
+            local release_dir
+            release_dir="$(mktemp -d)"
+
+            gh release download "$version" \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "$release_dir" \
+              --pattern 'aura-windows-amd64.zip' \
+              --pattern 'aura-macos-arm64.zip'
+            git archive --format=zip --output="$release_dir/aura-source.zip" "$version"
+
+            curl --fail-with-body --retry 3 \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${version}" -F "artifact=windows" \
+              -F "file=@${release_dir}/aura-windows-amd64.zip" \
+              https://api.copal.run/v1/releases/publish
+            curl --fail-with-body --retry 3 \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${version}" -F "artifact=macos" \
+              -F "file=@${release_dir}/aura-macos-arm64.zip" \
+              https://api.copal.run/v1/releases/publish
+            curl --fail-with-body --retry 3 \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${version}" -F "artifact=source" \
+              -F "file=@${release_dir}/aura-source.zip" \
+              https://api.copal.run/v1/releases/publish
+
+            rm -rf -- "$release_dir"
+          }
+
+          for version in \
+            v0.1.0 v0.2.0 v0.2.1 v0.2.2 v0.2.3 \
+            v0.2.4 v0.2.5 v0.2.6 v0.3.0
+          do
+            upload_release "$version"
+          done
+
+          echo 'Upload v0.3.1 last to restore all canonical latest pointers'
+          upload_release v0.3.1
