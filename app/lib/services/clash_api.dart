@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-/// Polls sing-box's embedded Clash API (external_controller 127.0.0.1:9090)
+/// Polls the private engine's Clash API (external_controller 127.0.0.1:9090)
 /// for live stats: active server (urltest `now`), per-server latency history,
 /// and cumulative up/down traffic.
 class ClashApi {

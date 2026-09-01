@@ -15,6 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: aura-core/go.mod
+
+      - name: Test aura-core
+        working-directory: aura-core
+        run: go test ./...
+
       - name: Validate PowerShell deployment scripts
         shell: pwsh
         run: |
@@ -43,19 +52,20 @@ jobs:
       - name: Download sing-box (windows-amd64)
         shell: pwsh
         run: |
-          $dir = "$env:RUNNER_TEMP\singbox"
+          $work = "$env:RUNNER_TEMP\singbox"
+          $dir = "$work\engine"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $zip = "$dir\sb.zip"
+          $zip = "$work\sb.zip"
           Invoke-WebRequest "https://github.com/SagerNet/sing-box/releases/download/v$env:SB_VERSION/sing-box-$env:SB_VERSION-windows-amd64.zip" -OutFile $zip
-          $extract = "$dir\ex"
+          $extract = "$work\ex"
           Expand-Archive $zip $extract
           Get-ChildItem "$extract" -Directory | Select-Object -First 1 | ForEach-Object {
             Get-ChildItem $_.FullName | Copy-Item -Destination $dir -Recurse -Force
           }
           if (-not (Test-Path "$dir\wintun.dll")) {
-            Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$dir\wintun.zip"
-            Expand-Archive "$dir\wintun.zip" "$dir\w"
-            Copy-Item "$dir\w\wintun\bin\amd64\wintun.dll" "$dir"
+            Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$work\wintun.zip"
+            Expand-Archive "$work\wintun.zip" "$work\w"
+            Copy-Item "$work\w\wintun\bin\amd64\wintun.dll" "$dir"
           }
           echo "SB_DIR=$dir" >> $env:GITHUB_ENV
 
@@ -69,12 +79,18 @@ jobs:
       - run: flutter build windows --release
         working-directory: app
 
-      - name: Bundle sing-box + zip
+      - name: Build aura-core helper
+        shell: pwsh
+        working-directory: aura-core
+        run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o aura-core.exe .
+
+      - name: Bundle aura-core + Naive engine + zip
         shell: pwsh
         run: |
           $rel = "app\build\windows\x64\runner\Release"
-          New-Item -ItemType Directory -Force -Path "$rel\sing-box" | Out-Null
-          Get-ChildItem "$env:SB_DIR" | Copy-Item -Destination "$rel\sing-box" -Force
+          New-Item -ItemType Directory -Force -Path "$rel\aura-core\engine" | Out-Null
+          Copy-Item "aura-core\aura-core.exe" "$rel\aura-core\aura-core.exe" -Force
+          Get-ChildItem "$env:SB_DIR" | Copy-Item -Destination "$rel\aura-core\engine" -Force
           Compress-Archive -Path "$rel\*" -DestinationPath aura-windows-amd64.zip
 
       - uses: actions/upload-artifact@v4
@@ -86,6 +102,15 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: aura-core/go.mod
+
+      - name: Test aura-core
+        working-directory: aura-core
+        run: go test ./...
 
       - uses: subosito/flutter-action@v2
         with:
@@ -108,11 +133,16 @@ jobs:
       - run: flutter build macos --release
         working-directory: app
 
-      - name: Bundle sing-box + zip
+      - name: Build aura-core helper
+        working-directory: aura-core
+        run: go build -trimpath -ldflags "-s -w" -o aura-core .
+
+      - name: Bundle aura-core + Naive engine + zip
         run: |
           APP="app/build/macos/Build/Products/Release/aura.app"
-          mkdir -p "$APP/Contents/MacOS/sing-box"
-          cp "$SB_DIR"/sing-box "$APP/Contents/MacOS/sing-box/"
+          mkdir -p "$APP/Contents/MacOS/aura-core/engine"
+          cp aura-core/aura-core "$APP/Contents/MacOS/aura-core/"
+          cp "$SB_DIR"/sing-box "$APP/Contents/MacOS/aura-core/engine/"
           codesign --force --deep --sign - "$APP"
           ditto -c -k --keepParent "$APP" aura-macos-arm64.zip
 
@@ -131,6 +161,25 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+
+      - name: Publish auto-update artifacts
+        env:
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          curl --fail-with-body --retry 3 --retry-all-errors \
+            -H "Authorization: Bearer $AURA_RELEASE_UPLOAD_TOKEN" \
+            -F "key=latest" \
+            -F "version=$RELEASE_VERSION" \
+            -F "file=@dist/aura-windows-amd64/aura-windows-amd64.zip;type=application/zip" \
+            https://api.copal.run/v1/release/upload
+          curl --fail-with-body --retry 3 --retry-all-errors \
+            -H "Authorization: Bearer $AURA_RELEASE_UPLOAD_TOKEN" \
+            -F "key=latest-macos" \
+            -F "version=$RELEASE_VERSION" \
+            -F "file=@dist/aura-macos-arm64/aura-macos-arm64.zip;type=application/zip" \
+            https://api.copal.run/v1/release/upload
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*.zip

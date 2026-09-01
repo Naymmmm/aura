@@ -1,12 +1,27 @@
 // Release hosting: admin upload → R2, public download with range support.
 // Bucket stays private; the worker is the only reader. 'latest' is the stable key.
 
-import { json } from './util';
+import { json, safeEqual } from './util';
 import type { Env } from './util';
+
+// POST /v1/release/upload — CI-only release upload. GitHub Actions receives a
+// narrowly scoped bearer secret rather than Cloudflare account credentials.
+export async function handleCiRelease(req: Request, env: Env): Promise<Response> {
+  if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+  if (!env.RELEASE_UPLOAD_TOKEN) return json({ error: 'not_configured' }, 503);
+
+  const auth = req.headers.get('authorization') ?? '';
+  const prefix = 'Bearer ';
+  const supplied = auth.startsWith(prefix) ? auth.slice(prefix.length) : '';
+  if (!supplied || !(await safeEqual(supplied, env.RELEASE_UPLOAD_TOKEN))) {
+    return json({ error: 'forbidden' }, 401);
+  }
+  return handleRelease(req, env);
+}
 
 // POST /v1/admin/release — multipart: form field "file", optional "key"
 // (default "latest", e.g. "latest-macos" for other platforms), optional
-// "version" (e.g. "v0.2.4", sanitized; defaults to a timestamp stamp).
+// "version" (e.g. "v0.2.6", sanitized; defaults to a timestamp stamp).
 // cookie-gated in admin.ts. Stores meta:<key> for the auto-updater.
 export async function handleRelease(req: Request, env: Env): Promise<Response> {
   const cl = Number(req.headers.get('content-length') ?? '0');

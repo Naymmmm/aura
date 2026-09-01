@@ -11,12 +11,13 @@ import 'package:path_provider/path_provider.dart';
 /// into a staging dir, then swaps on quit via a detached script that
 /// relaunches the new build.
 class UpdateService {
-  UpdateService({String? apiBase}) : _apiBase = apiBase ?? 'https://api.copal.run';
+  UpdateService({String? apiBase})
+    : _apiBase = apiBase ?? 'https://api.copal.run';
 
   final String _apiBase;
 
   /// The version this build ships with (bump per release).
-  static const appVersion = 'v0.2.5';
+  static const appVersion = 'v0.2.6';
 
   /// Which release key this platform downloads.
   static String platformKey() => Platform.isMacOS ? 'latest-macos' : 'latest';
@@ -49,7 +50,9 @@ class UpdateService {
   /// against the worker's meta, extracts it. Returns the staging dir.
   Future<String> stage(String version) async {
     final dir = await _stageDir;
-    if (await Directory(dir).exists()) await Directory(dir).delete(recursive: true);
+    if (await Directory(dir).exists()) {
+      await Directory(dir).delete(recursive: true);
+    }
     await Directory(dir).create(recursive: true);
 
     final metaResp = await http
@@ -63,7 +66,9 @@ class UpdateService {
     final dl = await http
         .get(Uri.parse('$_apiBase/dl/${platformKey()}'))
         .timeout(const Duration(minutes: 5));
-    if (dl.statusCode != 200) throw StateError('download failed (${dl.statusCode})');
+    if (dl.statusCode != 200) {
+      throw StateError('download failed (${dl.statusCode})');
+    }
 
     final gotSha = sha256.convert(dl.bodyBytes).toString();
     if (gotSha != wantSha) {
@@ -71,7 +76,7 @@ class UpdateService {
       throw StateError('checksum mismatch — update refused');
     }
 
-    // Extract the zip root (aura.exe+data+sing-box on Windows, aura.app on
+    // Extract the zip root (aura.exe+data+aura-core on Windows, aura.app on
     // macOS) into the staging dir; the swap happens on quit.
     final archive = ZipDecoder().decodeBytes(dl.bodyBytes);
     for (final f in archive) {
@@ -92,14 +97,24 @@ class UpdateService {
       final script = File(_p(stageDir, 'updater.ps1'));
       await script.writeAsString(_winUpdater());
       await Process.start('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-WindowStyle', 'Hidden',
-        '-File', script.path, stageDir, appDir, Platform.resolvedExecutable,
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-WindowStyle',
+        'Hidden',
+        '-File',
+        script.path,
+        stageDir,
+        appDir,
+        Platform.resolvedExecutable,
       ], mode: ProcessStartMode.detachedWithStdio);
       return;
     }
     // macOS
-    final bundleDir = Directory(Platform.resolvedExecutable).parent.parent.parent.path;
+    final bundleDir = Directory(
+      Platform.resolvedExecutable,
+    ).parent.parent.parent.path;
     final stagedApp = _p(stageDir, 'aura.app');
     final script = File(_p(stageDir, 'updater.sh'));
     await script.writeAsString(_macUpdater(bundleDir, stagedApp, pid));
@@ -107,8 +122,10 @@ class UpdateService {
     // run as root; the swap may target /Applications
     final osa =
         "do shell script \"sh ${_sh(script.path)}\" with administrator privileges";
-    await Process.start('osascript', ['-e', osa],
-        mode: ProcessStartMode.detachedWithStdio);
+    await Process.start('osascript', [
+      '-e',
+      osa,
+    ], mode: ProcessStartMode.detachedWithStdio);
   }
 
   static String _winUpdater() {
@@ -141,7 +158,7 @@ open "\$APP" 2>/dev/null &
   /// POSIX single-quote for embedding in sh.
   static String _sh(String p) => "'${p.replaceAll("'", "'\\''")}'";
 
-  /// 'v0.2.4' > 'v0.2.3'; falls back to plain string compare.
+  /// 'v0.2.6' > 'v0.2.5'; falls back to plain string compare.
   static bool _newer(String a, String b) {
     final va = _parts(a);
     final vb = _parts(b);

@@ -5,6 +5,7 @@ export interface Env {
   RELEASES: R2Bucket;
   API_SECRET: string;
   ADMIN_PASSWORD: string;
+  RELEASE_UPLOAD_TOKEN: string;
 }
 
 export const HDRS = {

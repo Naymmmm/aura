@@ -4,7 +4,7 @@ DPI-resistant VPN on Oracle Cloud Always Free + a Flutter desktop app with aura.
 
 - **3 NaiveProxy servers** (ap-melbourne-1): `romeo`, `juliet`, `mercutio` → `*.api.copal.run`
 - **Cloudflare Worker** at `api.copal.run` — central config API (server list + creds, KV-backed)
-- **Aura app** (Windows + macOS) — Flutter, runs bundled sing-box in TUN mode, auto-selects fastest server
+- **Aura app** (Windows + macOS) — Flutter UI backed by the persistent `aura-core` privileged helper
 
 ## Layout
 
@@ -13,6 +13,7 @@ infra/          PowerShell provisioning (OCI + Cloudflare + server bootstrap)
 config/         sing-box client template
 worker/         Cloudflare Worker (config API)
 app/            Flutter desktop app
+aura-core/      authenticated helper/service and tunnel-engine boundary
 .github/        CI builds (Windows + macOS)
 ```
 
@@ -31,8 +32,13 @@ infra/07-EnableUdpOverTcp.ps1  migrate servers to sing-box Naive for encrypted U
 ## App flow
 
 Aura login (account id + token) → `POST api.copal.run/v1/session` (checks out rotating
-server creds) → generate sing-box config (3 naive outbounds in urltest group, TUN +
-fakeip DNS) → run bundled sing-box elevated → live latency/traffic via Clash API.
+server creds) → generate the Naive + UoT config → send it to `aura-core` over an
+authenticated loopback API → the already-privileged helper validates and starts
+the private engine → live latency/traffic via the Clash API.
+
+The helper needs one administrator approval when first installed (and when the
+helper itself is upgraded), not on every connection. Closing Aura stops the
+tunnel and waits for TUN/route cleanup before the desktop process exits.
 
 ## Downloads
 
@@ -59,6 +65,8 @@ credit (days) to it.
 - `prefer_ip` in the Worker KV payload switches the app to raw-IP connect if the domain ever gets DNS-poisoned.
 - Unsigned builds: Windows "More info → Run anyway", macOS right-click → Open.
 - Admin panel at `https://api.copal.run/admin`.
+- Tagged GitHub Actions builds publish the Windows and macOS ZIPs to both the
+  GitHub Release and the Worker's R2-backed auto-update endpoints.
 
 ## License
 

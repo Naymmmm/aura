@@ -1,4 +1,4 @@
-# fetch_singbox.ps1 — download sing-box + wintun.dll next to the dev-built exe.
+# fetch_singbox.ps1 — build aura-core and fetch its private Windows engine.
 # Usage (from app/):  pwsh tool/fetch_singbox.ps1
 param(
   [string]$Version = "1.13.15",
@@ -7,8 +7,17 @@ param(
 $ErrorActionPreference = "Stop"
 
 $dest = Join-Path (Split-Path $PSScriptRoot -Parent) $Target
-$sbDir = Join-Path $dest "sing-box"
+$coreDir = Join-Path $dest "aura-core"
+$sbDir = Join-Path $coreDir "engine"
 New-Item -ItemType Directory -Force -Path $sbDir | Out-Null
+
+$repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+Push-Location (Join-Path $repoRoot "aura-core")
+try {
+  go build -trimpath -ldflags "-s -w -H=windowsgui" -o (Join-Path $coreDir "aura-core.exe") .
+} finally {
+  Pop-Location
+}
 
 $zip = "$env:TEMP\sing-box-$Version.zip"
 if (-not (Test-Path $zip)) {
@@ -33,5 +42,5 @@ if (-not (Test-Path (Join-Path $sbDir "wintun.dll"))) {
   Copy-Item "$env:TEMP\wintun-extract\wintun\bin\amd64\wintun.dll" $sbDir -Force
 }
 
-Write-Host "sing-box ready at: $sbDir" -ForegroundColor Green
-Get-ChildItem $sbDir | Select-Object Name, Length
+Write-Host "aura-core dev bundle ready at: $coreDir" -ForegroundColor Green
+Get-ChildItem $coreDir -Recurse | Select-Object FullName, Length

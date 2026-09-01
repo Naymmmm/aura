@@ -1,17 +1,17 @@
-# aura
+# Aura desktop 0.2.6
 
-A new Flutter project.
+Flutter desktop UI for Aura on Windows and macOS.
 
-## Getting Started
+The app is intentionally unprivileged. It generates session configuration and
+talks to `aura-core` over an authenticated loopback API. `aura-core` owns TUN,
+NaiveProxy + UDP-over-TCP lifecycle, validation, logs, and recovery.
 
-This project is a starting point for a Flutter application.
+Release bundles place the helper beside the executable:
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```
+aura-core/
+  aura-core[.exe]
+  engine/
+    sing-box[.exe]
+    libcronet.dll   # Windows
+```

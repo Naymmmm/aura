@@ -21,6 +21,10 @@ app/.dart_tool/
 app/.flutter-plugins*
 app/build/
 app/windows/flutter/ephemeral/
+/aura-core/aura-core
+/aura-core/aura-core.exe
+/aura-core/*.test
+/aura-core/*.test.exe
 
 # node
 worker/node_modules/

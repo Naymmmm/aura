@@ -9,11 +9,11 @@ import 'ui/login_view.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Desktop niceties: small window, close hides to tray.
+  // Compact dashboard window; close waits for tunnel cleanup before exit.
   await windowManager.ensureInitialized();
   const winOpts = WindowOptions(
-    size: Size(440, 720),
-    minimumSize: Size(380, 560),
+    size: Size(500, 760),
+    minimumSize: Size(420, 620),
     center: true,
     title: 'Aura',
     titleBarStyle: TitleBarStyle.normal,
@@ -25,6 +25,8 @@ void main() async {
 
   final state = AppState();
   await state.init(); // restore a saved login, or land on the login gate
+  await windowManager.setPreventClose(true);
+  windowManager.addListener(_AppWindowListener(state));
 
   runApp(AuraApp(state: state));
   _initTray(state);
@@ -40,15 +42,19 @@ void _initTray(AppState state) async {
 void _updateTrayMenu(AppState state) async {
   final connected = state.phase == VpnPhase.connected;
   final loggedOut = state.phase == VpnPhase.loggedOut;
-  await trayManager.setContextMenu(Menu(
-    items: [
-      MenuItem(key: 'show', label: 'Show Aura'),
-      if (!loggedOut) MenuItem(key: 'connect', label: connected ? 'Reconnect' : 'Connect'),
-      if (!loggedOut && connected) MenuItem(key: 'disconnect', label: 'Disconnect'),
-      MenuItem.separator(),
-      MenuItem(key: 'quit', label: 'Quit'),
-    ],
-  ));
+  await trayManager.setContextMenu(
+    Menu(
+      items: [
+        MenuItem(key: 'show', label: 'Show Aura'),
+        if (!loggedOut)
+          MenuItem(key: 'connect', label: connected ? 'Reconnect' : 'Connect'),
+        if (!loggedOut && connected)
+          MenuItem(key: 'disconnect', label: 'Disconnect'),
+        MenuItem.separator(),
+        MenuItem(key: 'quit', label: 'Quit'),
+      ],
+    ),
+  );
 }
 
 class _TrayListener with TrayListener {
@@ -83,7 +89,29 @@ class _TrayListener with TrayListener {
       case 'disconnect':
         if (state.phase == VpnPhase.connected) await state.disconnect();
       case 'quit':
+        await state.shutdown();
+        await windowManager.setPreventClose(false);
         await windowManager.destroy();
+    }
+  }
+}
+
+class _AppWindowListener with WindowListener {
+  _AppWindowListener(this.state);
+
+  final AppState state;
+  bool _closing = false;
+
+  @override
+  void onWindowClose() async {
+    if (_closing) return;
+    _closing = true;
+    try {
+      await state.shutdown();
+      await windowManager.setPreventClose(false);
+      await windowManager.destroy();
+    } finally {
+      _closing = false;
     }
   }
 }
@@ -95,17 +123,39 @@ class AuraApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF8B5CF6), // aura purple
-      brightness: Brightness.dark,
-    );
+    final scheme =
+        ColorScheme.fromSeed(
+          seedColor: const Color(0xFF8B7CFF),
+          brightness: Brightness.dark,
+          surface: const Color(0xFF0B0D18),
+        ).copyWith(
+          primary: const Color(0xFF9D8CFF),
+          secondary: const Color(0xFF62E6FF),
+          tertiary: const Color(0xFFFFC56E),
+        );
     return MaterialApp(
       title: 'Aura',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: scheme,
         useMaterial3: true,
-        scaffoldBackgroundColor: scheme.surface,
+        scaffoldBackgroundColor: const Color(0xFF070914),
+        cardTheme: CardThemeData(
+          elevation: 0,
+          color: const Color(0xB3161928),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+            side: const BorderSide(color: Color(0x1FFFFFFF)),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0x99161928),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0x24FFFFFF)),
+          ),
+        ),
       ),
       home: ListenableBuilder(
         listenable: state,

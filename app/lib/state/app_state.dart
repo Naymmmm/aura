@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -10,16 +9,23 @@ import '../models/server_info.dart';
 import '../services/clash_api.dart';
 import '../services/config_generator.dart';
 import '../services/session_service.dart';
-import '../services/singbox_manager.dart';
+import '../services/aura_core_manager.dart';
 import '../services/update_service.dart';
 import '../services/usage_tracker.dart';
 
-enum VpnPhase { loggedOut, disconnected, fetchingConfig, connecting, connected, error }
+enum VpnPhase {
+  loggedOut,
+  disconnected,
+  fetchingConfig,
+  connecting,
+  connected,
+  error,
+}
 
 /// Central app state: login → connect/disconnect flow, live stats, log sink.
 class AppState extends ChangeNotifier {
   AppState({SessionService? sessionService})
-      : _sessionService = sessionService ?? SessionService();
+    : _sessionService = sessionService ?? SessionService();
 
   final SessionService _sessionService;
   final ClashApi _clash = ClashApi();
@@ -68,6 +74,7 @@ class AppState extends ChangeNotifier {
   int _pollTick = 0;
   int _prevUp = 0;
   int _prevDown = 0;
+  int _coreMisses = 0;
 
   /// Bytes used this calendar month (persisted across sessions).
   int get monthUsed => _monthUsed;
@@ -78,11 +85,14 @@ class AppState extends ChangeNotifier {
   /// 0.0 → 1.0 share of the monthly budget used.
   double get budgetFraction => _budgetBytes > 0 ? _monthUsed / _budgetBytes : 0;
 
-  bool get budgetWarn => _budgetBytes > 0 && budgetFraction >= 0.8 && !overBudget;
+  bool get budgetWarn =>
+      _budgetBytes > 0 && budgetFraction >= 0.8 && !overBudget;
   bool get overBudget => _budgetBytes > 0 && _monthUsed >= _budgetBytes;
 
   Timer? _statsTimer;
   String? _clashSecret;
+  bool _shutdownRequested = false;
+  Completer<void>? _connectDone;
 
   static String _ts() => DateTime.now().toIso8601String().substring(11, 19);
 
@@ -98,7 +108,8 @@ class AppState extends ChangeNotifier {
   }
 
   /// Saved account creds from disk (for login-view prefill).
-  Future<({String accountId, String token})?> savedCreds() => _sessionService.saved();
+  Future<({String accountId, String token})?> savedCreds() =>
+      _sessionService.saved();
 
   /// Restore a saved login, if any. Call once before runApp.
   Future<void> init() async {
@@ -174,10 +185,18 @@ class AppState extends ChangeNotifier {
   /// Opens a session with account creds; on success the app is ready to
   /// connect. remember=false skips persisting the creds (and wipes any
   /// saved ones). Failures land in [authError] for the login view.
-  Future<bool> login(String accountId, String token, {bool remember = true}) async {
+  Future<bool> login(
+    String accountId,
+    String token, {
+    bool remember = true,
+  }) async {
     _authError = null;
     try {
-      _session = await _sessionService.openSession(accountId, token, remember: remember);
+      _session = await _sessionService.openSession(
+        accountId,
+        token,
+        remember: remember,
+      );
       _sessionOpen = true;
       _log('session opened for $accountId');
       setPhase(VpnPhase.disconnected);
@@ -203,18 +222,24 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> connect() async {
-    if (_phase == VpnPhase.connected || _phase == VpnPhase.connecting) return false;
+    if (_shutdownRequested) return false;
+    if (_phase == VpnPhase.connected || _phase == VpnPhase.connecting) {
+      return false;
+    }
     if (_session == null && !_sessionOpen) {
       setPhase(VpnPhase.loggedOut);
       return false;
     }
+    final connectDone = Completer<void>();
+    _connectDone = connectDone;
     setPhase(VpnPhase.connecting);
     _statusLine = null;
     try {
       // Reuse the open session while it's fresh; otherwise re-checkout.
       if (!_sessionOpen ||
           _session == null ||
-          _session!.expiresAt.difference(DateTime.now()) < const Duration(hours: 1)) {
+          _session!.expiresAt.difference(DateTime.now()) <
+              const Duration(hours: 1)) {
         final saved = await _sessionService.saved();
         if (saved == null) {
           _session = null;
@@ -222,7 +247,10 @@ class AppState extends ChangeNotifier {
           setPhase(VpnPhase.loggedOut);
           return false;
         }
-        _session = await _sessionService.openSession(saved.accountId, saved.token);
+        _session = await _sessionService.openSession(
+          saved.accountId,
+          saved.token,
+        );
         _sessionOpen = true;
       }
       final cfg = _session!.config;
@@ -234,7 +262,7 @@ class AppState extends ChangeNotifier {
         setPhase(VpnPhase.error);
         return false;
       }
-      final dir = await SingboxManager.dir;
+      final dir = await AuraCoreManager.dir;
       await Directory(dir).create(recursive: true);
       _clashSecret = _randomSecret();
       await ConfigGenerator.generate(
@@ -242,16 +270,20 @@ class AppState extends ChangeNotifier {
         singBoxDir: dir,
         clashSecret: _clashSecret!,
       );
+      if (_shutdownRequested) return false;
       _clash.setSecret(_clashSecret!);
-      final startResult = await SingboxManager.start(configDir: dir);
-      if (startResult.stderr.toString().trim().isNotEmpty) {
-        _log('core: ${startResult.stderr.toString().trim()}');
+      await AuraCoreManager.start(configDir: dir);
+      if (_shutdownRequested) {
+        await AuraCoreManager.stop(configDir: dir);
+        return false;
       }
 
       final active = await _clash.waitForActive(const Duration(seconds: 20));
       if (active == null) {
         // Verbose failure: surface what the core actually wrote.
-        throw StateError('sing-box started but no server came alive\n${await _coreLogTail(dir)}');
+        final log = await AuraCoreManager.recentLog(dir);
+        await AuraCoreManager.stop(configDir: dir);
+        throw StateError('aura-core started but no server came alive\n$log');
       }
       _activeServer = active;
       setPhase(VpnPhase.connected);
@@ -277,10 +309,19 @@ class AppState extends ChangeNotifier {
       }
       return false;
     } catch (e) {
+      try {
+        final dir = await AuraCoreManager.dir;
+        await AuraCoreManager.stop(configDir: dir);
+      } catch (_) {
+        // Preserve the original connection failure below.
+      }
       _statusLine = 'connect failed: $e';
       _log('ERROR $e');
       setPhase(VpnPhase.error);
       return false;
+    } finally {
+      if (!connectDone.isCompleted) connectDone.complete();
+      if (identical(_connectDone, connectDone)) _connectDone = null;
     }
   }
 
@@ -298,9 +339,9 @@ class AppState extends ChangeNotifier {
       } catch (_) {} // persistence must never break a disconnect
       _pendingUsage = 0;
     }
-    final dir = await SingboxManager.dir;
+    final dir = await AuraCoreManager.dir;
     try {
-      await SingboxManager.stop(configDir: dir);
+      await AuraCoreManager.stop(configDir: dir);
     } catch (e) {
       _log('disconnect warning: $e');
     }
@@ -312,9 +353,19 @@ class AppState extends ChangeNotifier {
     _log('disconnected');
   }
 
+  /// Final app shutdown. Unlike an ordinary disconnect this latches, so a
+  /// connection already waiting on helper setup cannot start after the window
+  /// has disappeared.
+  Future<void> shutdown() async {
+    _shutdownRequested = true;
+    await _connectDone?.future;
+    await disconnect();
+  }
+
   /// Re-checkout fresh pool creds (refresh button). Also refreshes the
   /// per-account budget while it's at it.
   Future<void> refreshConfig() async {
+    final wasConnected = _phase == VpnPhase.connected;
     setPhase(VpnPhase.fetchingConfig);
     try {
       final saved = await _sessionService.saved();
@@ -324,12 +375,15 @@ class AppState extends ChangeNotifier {
         setPhase(VpnPhase.loggedOut);
         return;
       }
-      _session = await _sessionService.openSession(saved.accountId, saved.token);
+      _session = await _sessionService.openSession(
+        saved.accountId,
+        saved.token,
+      );
       _sessionOpen = true;
       _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
       _monthUsed = await _usage.monthUsed();
       _log('config refreshed: ${_session!.config.servers.length} servers');
-      setPhase(_phase == VpnPhase.connected ? VpnPhase.connected : VpnPhase.disconnected);
+      setPhase(wasConnected ? VpnPhase.connected : VpnPhase.disconnected);
     } on SessionException catch (e) {
       if (e.kind == AuthErrorKind.badCreds ||
           e.kind == AuthErrorKind.accountExpired ||
@@ -375,10 +429,24 @@ class AppState extends ChangeNotifier {
     _prevUp = 0;
     _prevDown = 0;
     _pollTick = 0;
+    _coreMisses = 0;
     _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       if (_phase != VpnPhase.connected) return;
       final tags = _session?.config.servers.map((s) => s.tag).toList() ?? [];
       final active = await _clash.activeServer();
+      if (active == null) {
+        _coreMisses++;
+        if (_coreMisses >= 3 && !await AuraCoreManager.isEngineRunning) {
+          _statsTimer?.cancel();
+          _statusLine =
+              'the tunnel engine stopped unexpectedly — tap connect to repair';
+          _log('aura-core reports that the tunnel engine exited');
+          setPhase(VpnPhase.error);
+          return;
+        }
+      } else {
+        _coreMisses = 0;
+      }
       if (active != null && active != _activeServer) {
         final prev = _activeServer;
         _activeServer = active;
@@ -391,7 +459,7 @@ class AppState extends ChangeNotifier {
       _upBytes = up;
       _downBytes = down;
 
-      // Budget accounting: /traffic is cumulative since sing-box start,
+      // Budget accounting: /traffic is cumulative since the engine starts,
       // so the delta vs last poll is what actually flowed through the tunnel.
       final total = up + down;
       final prev = _prevUp + _prevDown;
@@ -407,8 +475,11 @@ class AppState extends ChangeNotifier {
       }
 
       if (overBudget) {
-        _log('budget exhausted (${_monthUsed ~/ (1024 * 1024)} MB) — hard stop');
-        _statusLine = 'budget blown. disconnecting. we’ll be so back next month.';
+        _log(
+          'budget exhausted (${_monthUsed ~/ (1024 * 1024)} MB) — hard stop',
+        );
+        _statusLine =
+            'budget blown. disconnecting. we’ll be so back next month.';
         await disconnect();
         return;
       }
@@ -417,30 +488,11 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  /// Tail of sing-box.log (bounded read; log can grow large) for error
-  /// surfacing — the "it wasn't verbose" fix.
-  static Future<String> _coreLogTail(String dir) async {
-    final f = File('$dir${Platform.pathSeparator}sing-box.log');
-    if (!await f.exists()) return '(no sing-box.log yet)';
-    const maxBytes = 8192;
-    try {
-      final len = await f.length();
-      final raf = await f.open();
-      try {
-        final skip = len > maxBytes ? len - maxBytes : 0;
-        await raf.setPosition(skip);
-        final bytes = await raf.read(len > maxBytes ? maxBytes : len);
-        return utf8.decode(bytes, allowMalformed: true);
-      } finally {
-        await raf.close();
-      }
-    } catch (e) {
-      return '(could not read sing-box.log: $e)';
-    }
-  }
-
   static String _randomSecret() {
     final rnd = Random.secure();
-    return List.generate(16, (_) => rnd.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+    return List.generate(
+      16,
+      (_) => rnd.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
   }
 }

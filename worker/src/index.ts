@@ -15,7 +15,7 @@ import type { Env } from './util';
 import { handleOpenSession, handleHeartbeat, handleCloseSession, handleSignup } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
-import { serveDownload, serveReleaseMeta } from './releases';
+import { handleCiRelease, serveDownload, serveReleaseMeta } from './releases';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -33,6 +33,8 @@ export default {
       if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
       return serveReleaseMeta(req, env);
     }
+
+    if (url.pathname === '/v1/release/upload') return handleCiRelease(req, env);
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
     if (sessMatch) return serveSession(req, env, sessMatch[1], sessMatch[2]);
