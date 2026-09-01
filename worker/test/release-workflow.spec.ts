@@ -11,6 +11,8 @@ describe('release workflow', () => {
     expect(workflow).toContain('publish windows');
     expect(workflow).toContain('publish macos');
     expect(workflow).toContain('publish source');
+    expect(workflow).toContain('sha256sum');
+    expect(workflow).toContain('-F "sha256=');
   });
 
   it('requires a versioned changelog and publishes it after all artifacts', () => {
@@ -32,5 +34,7 @@ describe('release workflow', () => {
     expect(backfillWorkflow).toContain('/v1/releases/publish');
     expect(backfillWorkflow).toContain('secrets.AURA_RELEASE_UPLOAD_TOKEN');
     expect(backfillWorkflow).toContain('Upload v0.3.1 last');
+    expect(backfillWorkflow).toContain('sha256sum');
+    expect(backfillWorkflow).toContain('-F "sha256=');
   });
 });

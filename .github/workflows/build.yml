@@ -198,10 +198,12 @@ jobs:
         run: |
           set -euo pipefail
           publish() {
+            sha256="$(sha256sum "$2" | awk '{print $1}')"
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
               -F "version=${GITHUB_REF_NAME}" \
               -F "artifact=$1" \
+              -F "sha256=${sha256}" \
               -F "file=@$2;type=application/zip" \
               https://api.copal.run/v1/releases/publish
           }

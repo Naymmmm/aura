@@ -167,6 +167,30 @@ describe('Discord-gated downloads', () => {
     expect(response.status).toBe(400);
   });
 
+  it('uses a CI-supplied sha256 without hashing the uploaded binary in the worker', async () => {
+    const suppliedSha = 'a'.repeat(64);
+    const form = new FormData();
+    form.set('version', 'v0.3.0');
+    form.set('artifact', 'macos');
+    form.set('sha256', suppliedSha);
+    form.set('file', new File(['large-build'], 'aura-macos-arm64.zip', { type: 'application/zip' }));
+
+    const response = await worker.fetch(
+      request('/v1/releases/publish', {
+        method: 'POST',
+        headers: { authorization: 'Bearer test-release-upload-token' },
+        body: form,
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ sha256: suppliedSha });
+    expect(await (await env.RELEASES.get('meta:latest-macos'))!.json()).toMatchObject({
+      sha256: suppliedSha,
+    });
+  });
+
   it('announces a completed release changelog through the Aura bot only once', async () => {
     const version = 'v0.7.0';
     await publishArtifact(version, 'windows', 'windows-v7');

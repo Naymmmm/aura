@@ -35,21 +35,21 @@ jobs:
               --pattern 'aura-macos-arm64.zip'
             git archive --format=zip --output="$release_dir/aura-source.zip" "$version"
 
-            curl --fail-with-body --retry 3 \
-              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
-              -F "version=${version}" -F "artifact=windows" \
-              -F "file=@${release_dir}/aura-windows-amd64.zip" \
-              https://api.copal.run/v1/releases/publish
-            curl --fail-with-body --retry 3 \
-              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
-              -F "version=${version}" -F "artifact=macos" \
-              -F "file=@${release_dir}/aura-macos-arm64.zip" \
-              https://api.copal.run/v1/releases/publish
-            curl --fail-with-body --retry 3 \
-              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
-              -F "version=${version}" -F "artifact=source" \
-              -F "file=@${release_dir}/aura-source.zip" \
-              https://api.copal.run/v1/releases/publish
+            upload_artifact() {
+              local artifact="$1"
+              local file="$2"
+              local sha256
+              sha256="$(sha256sum "$file" | awk '{print $1}')"
+              curl --fail-with-body --retry 5 --retry-all-errors \
+                -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+                -F "version=${version}" -F "artifact=${artifact}" \
+                -F "sha256=${sha256}" -F "file=@${file};type=application/zip" \
+                https://api.copal.run/v1/releases/publish
+            }
+
+            upload_artifact windows "$release_dir/aura-windows-amd64.zip"
+            upload_artifact macos "$release_dir/aura-macos-arm64.zip"
+            upload_artifact source "$release_dir/aura-source.zip"
 
             rm -rf -- "$release_dir"
           }

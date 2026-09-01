@@ -61,6 +61,7 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
   const file = form.get('file');
   const version = String(form.get('version') ?? '');
   const artifact = String(form.get('artifact') ?? '');
+  const suppliedSha256 = String(form.get('sha256') ?? '').toLowerCase();
   if (
     !(file instanceof File) ||
     file.size > 95 * 1024 * 1024 ||
@@ -71,18 +72,29 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
   }
 
   const archiveKey = `archive/${version}/${artifact}.zip`;
-  const digestStream = new crypto.DigestStream('SHA-256');
-  const [r2Body, digestBody] = file.stream().tee();
-  const [, digest] = await Promise.all([
-    env.RELEASES.put(archiveKey, r2Body, {
+  let sha256: string;
+  if (/^[a-f0-9]{64}$/.test(suppliedSha256)) {
+    await env.RELEASES.put(archiveKey, file.stream(), {
       httpMetadata: {
         contentType: 'application/zip',
         contentDisposition: `attachment; filename="${artifactFileName(artifact, version)}"`,
       },
-    }),
-    digestBody.pipeTo(digestStream).then(() => digestStream.digest),
-  ]);
-  const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    });
+    sha256 = suppliedSha256;
+  } else {
+    const digestStream = new crypto.DigestStream('SHA-256');
+    const [r2Body, digestBody] = file.stream().tee();
+    const [, digest] = await Promise.all([
+      env.RELEASES.put(archiveKey, r2Body, {
+        httpMetadata: {
+          contentType: 'application/zip',
+          contentDisposition: `attachment; filename="${artifactFileName(artifact, version)}"`,
+        },
+      }),
+      digestBody.pipeTo(digestStream).then(() => digestStream.digest),
+    ]);
+    sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
   const uploaded = Date.now();
   const artifactMeta: ArchiveArtifactMeta = {
     key: archiveKey,
