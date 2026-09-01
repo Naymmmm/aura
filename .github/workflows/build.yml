@@ -178,28 +178,36 @@ jobs:
       contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
 
-      - name: Publish auto-update artifacts
+      - name: Build source archive
+        run: git archive --format=zip --prefix="aura-${GITHUB_REF_NAME}/" --output aura-source.zip HEAD
+
+      - name: Publish version archive to Aura
         env:
           AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
-          RELEASE_VERSION: ${{ github.ref_name }}
         run: |
-          curl --fail-with-body --retry 3 --retry-all-errors \
-            -H "Authorization: Bearer $AURA_RELEASE_UPLOAD_TOKEN" \
-            -F "key=latest" \
-            -F "version=$RELEASE_VERSION" \
-            -F "file=@dist/aura-windows-amd64/aura-windows-amd64.zip;type=application/zip" \
-            https://api.copal.run/v1/release/upload
-          curl --fail-with-body --retry 3 --retry-all-errors \
-            -H "Authorization: Bearer $AURA_RELEASE_UPLOAD_TOKEN" \
-            -F "key=latest-macos" \
-            -F "version=$RELEASE_VERSION" \
-            -F "file=@dist/aura-macos-arm64/aura-macos-arm64.zip;type=application/zip" \
-            https://api.copal.run/v1/release/upload
+          set -euo pipefail
+          publish() {
+            curl --fail-with-body --retry 3 --retry-all-errors \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${GITHUB_REF_NAME}" \
+              -F "artifact=$1" \
+              -F "file=@$2;type=application/zip" \
+              https://api.copal.run/v1/releases/publish
+          }
+          publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
+          publish macos dist/aura-macos-arm64/aura-macos-arm64.zip
+          publish source aura-source.zip
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*.zip
+          files: |
+            dist/**/*.zip
+            aura-source.zip

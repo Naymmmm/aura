@@ -1,0 +1,12 @@
+API_SECRET=local-api-secret
+ADMIN_PASSWORD=local-admin-password
+DISCORD_CLIENT_ID=discord-application-id
+DISCORD_CLIENT_SECRET=discord-client-secret
+DISCORD_GUILD_ID=discord-guild-id
+DISCORD_PUBLIC_KEY=discord-application-public-key
+DISCORD_BOT_TOKEN=discord-bot-token
+DISCORD_STAFF_ROLE_ID=discord-staff-role-id
+DISCORD_LOG_CHANNEL_ID=discord-log-channel-id
+DISCORD_TRIAL_CHANNEL_ID=discord-trial-channel-id
+DOWNLOAD_SESSION_SECRET=random-download-session-secret
+RELEASE_UPLOAD_TOKEN=random-release-upload-token

@@ -1,12 +1,16 @@
 name = "copal-api"
 main = "src/index.ts"
-compatibility_date = "2026-08-01"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 account_id = "1cb1ed40c57962c401648a18ccb99332"
 
 routes = [
   { pattern = "api.copal.run", custom_domain = true }
 ]
+
+[vars]
+DISCORD_REQUIRED_ROLE_ID = "1544233739322789948"
 
 [[kv_namespaces]]
 binding = "SERVERS"
@@ -15,3 +19,9 @@ id = "ae43f700dc294f62ab98b42b82f7b12d"
 [[r2_buckets]]
 binding = "RELEASES"
 bucket_name = "aura-releases"
+
+[observability]
+enabled = true
+
+[triggers]
+crons = ["0 * * * *"]

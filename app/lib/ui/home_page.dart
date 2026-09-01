@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../services/session_service.dart';
 import '../state/app_state.dart';
 import '../ui/aura_lines.dart';
 import 'logs_page.dart';
@@ -123,13 +124,23 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                '(v0.3.0 master)',
+                '(v0.3.1)',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                   letterSpacing: 1.1,
                   fontWeight: FontWeight.w700,
                 ),
               ),
+              if (state.accountStatus case final account?)
+                Text(
+                  '${account.plan == AccountPlan.freeTrial ? 'FREE TRIAL' : 'PAID'} • ${account.budgetGb} GB • ${account.displayName}',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: account.plan == AccountPlan.freeTrial
+                        ? theme.colorScheme.tertiary
+                        : theme.colorScheme.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
             ],
           ),
           const Spacer(),

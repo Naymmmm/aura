@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import '../state/app_state.dart';
 import 'aura_lines.dart';
 
-/// Login gate: account id + API token (the creds the admin gave you).
-/// No emails, no passwords, no external auth — just the token.
-/// Also: self-service signup (account starts with zero credit) and the rules.
+/// Discord is the only account gate. The Worker exchanges browser approval for
+/// an opaque Aura token that remains valid for 14 days.
 class LoginView extends StatefulWidget {
   const LoginView({super.key, required this.state});
 
@@ -18,91 +16,21 @@ class LoginView extends StatefulWidget {
 }
 
 class _LoginViewState extends State<LoginView> {
-  final _idCtrl = TextEditingController();
-  final _tokCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
-  bool _remember = true;
   bool _busy = false;
   String? _errorLine;
 
-  bool _signupMode = false; // toggles login ⇄ self-service signup
-  bool _signupBusy = false;
-  String? _signupErr;
-  ({String accountId, String token})? _signedUp; // shown once
-
-  @override
-  void initState() {
-    super.initState();
-    // Prefill anything still on disk (e.g. after a failed logout flow).
-    widget.state.savedCreds().then((c) {
-      if (c != null && mounted) {
-        _idCtrl.text = c.accountId;
-        _tokCtrl.text = c.token;
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _idCtrl.dispose();
-    _tokCtrl.dispose();
-    _nameCtrl.dispose();
-    super.dispose();
-  }
-
   Future<void> _submit() async {
-    final id = _idCtrl.text.trim();
-    final tok = _tokCtrl.text.trim();
-    if (id.isEmpty || tok.isEmpty || _busy) return;
+    if (_busy) return;
     setState(() {
       _busy = true;
       _errorLine = null;
     });
-    final ok = await widget.state.login(id, tok, remember: _remember);
+    final ok = await widget.state.loginWithDiscord();
     if (!mounted) return;
     setState(() {
       _busy = false;
       if (!ok) _errorLine = AuraLines.authError(widget.state.authError);
     });
-  }
-
-  Future<void> _signup() async {
-    if (_signupBusy) return;
-    final name = _nameCtrl.text.trim();
-    if (name.isEmpty) {
-      setState(() => _signupErr = 'pick a name for the account first');
-      return;
-    }
-    setState(() {
-      _signupBusy = true;
-      _signupErr = null;
-    });
-    final creds = await widget.state.signup(name);
-    if (!mounted) return;
-    setState(() {
-      _signupBusy = false;
-      if (creds != null) {
-        _signedUp = creds;
-        // prefill the login form so it's one tap back
-        _idCtrl.text = creds.accountId;
-        _tokCtrl.text = creds.token;
-      } else {
-        final err = AuraLines.authError(widget.state.authError);
-        _signupErr = err.isEmpty
-            ? 'signup failed — check your connection'
-            : err;
-      }
-    });
-  }
-
-  void _copyToClipboard(String text, String what) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$what copied'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
   }
 
   @override
@@ -140,165 +68,46 @@ class _LoginViewState extends State<LoginView> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _signupMode
-                        ? 'create an account — the admin unlocks it'
-                        : 'log in to unlock the network with aura',
+                    'sign in with Discord to unlock Aura VPN',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
                   const SizedBox(height: 28),
-
-                  if (_signupMode) ...[
-                    if (_signedUp == null) ...[
-                      FTextField(
-                        control: FTextFieldControl.managed(
-                          controller: _nameCtrl,
-                        ),
-                        enabled: !_signupBusy,
-                        autocorrect: false,
-                        label: const Text('your name (who is this for?)'),
-                        hint: 'e.g. mateo',
-                        onSubmit: (_) => _signup(),
-                      ),
-                      const SizedBox(height: 14),
-                      FButton(
-                        size: FButtonSizeVariant.lg,
-                        onPress: _signupBusy ? null : _signup,
-                        child: _signupBusy
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text(
-                                'CREATE ACCOUNT',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  letterSpacing: 1.2,
-                                ),
-                              ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _signupErr ?? '',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.error,
-                        ),
-                      ),
-                    ] else ...[
-                      // token shown once — copy it before leaving this screen
-                      FCard(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Text(
-                                'account created — token shown ONCE',
-                                textAlign: TextAlign.center,
-                                style: theme.textTheme.titleSmall?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              _credRow(
-                                theme,
-                                'account id',
-                                _signedUp!.accountId,
-                              ),
-                              const SizedBox(height: 8),
-                              _credRow(theme, 'api token', _signedUp!.token),
-                              const SizedBox(height: 12),
-                              Text(
-                                'this account is dead until the admin adds credit (days) to it. log in below — you\'ll be told when it\'s live.',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                    ],
-                    FButton(
-                      variant: FButtonVariant.ghost,
-                      onPress: _signupBusy
-                          ? null
-                          : () => setState(() {
-                              _signupMode = false;
-                              _signupErr = null;
-                            }),
-                      child: const Text('back to login'),
-                    ),
-                  ] else ...[
-                    FTextField(
-                      control: FTextFieldControl.managed(controller: _idCtrl),
-                      autofocus: true,
-                      enabled: !_busy,
-                      autocorrect: false,
-                      label: const Text('account id'),
-                      hint: 'e.g. testme01',
-                      onSubmit: (_) => _submit(),
-                    ),
-                    const SizedBox(height: 14),
-                    FTextField.password(
-                      control: FTextFieldControl.managed(controller: _tokCtrl),
-                      enabled: !_busy,
-                      label: const Text('api token'),
-                      onSubmit: (_) => _submit(),
-                    ),
-                    const SizedBox(height: 10),
-                    FCheckbox(
-                      value: _remember,
-                      enabled: !_busy,
-                      onChange: (value) => setState(() => _remember = value),
-                      label: const Text('remember me on this machine'),
-                    ),
-                    const SizedBox(height: 14),
-                    FButton(
-                      size: FButtonSizeVariant.lg,
-                      onPress: _busy ? null : _submit,
-                      child: _busy
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text(
-                              'ASCEND',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 1.2,
-                              ),
+                  FButton(
+                    size: FButtonSizeVariant.lg,
+                    onPress: _busy ? null : _submit,
+                    child: _busy
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text(
+                            'CONTINUE WITH DISCORD',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1.2,
                             ),
+                          ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'A browser window will open. Your Aura session lasts 14 days.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _errorLine ?? '',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.error,
-                      ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _errorLine ?? '',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.error,
                     ),
-                    FButton(
-                      variant: FButtonVariant.ghost,
-                      onPress: _busy
-                          ? null
-                          : () => setState(() {
-                              _signupMode = true;
-                              _signedUp = null;
-                              _signupErr = null;
-                            }),
-                      child: const Text('no account yet? create one'),
-                    ),
-                  ],
-
+                  ),
                   const SizedBox(height: 24),
                   const _RulesCard(),
                 ],
@@ -309,49 +118,8 @@ class _LoginViewState extends State<LoginView> {
       ),
     );
   }
-
-  Widget _credRow(ThemeData theme, String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: theme.colorScheme.outlineVariant),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                Text(
-                  value,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: 'copy $label',
-            icon: const Icon(Icons.copy, size: 18),
-            onPressed: () => _copyToClipboard(value, label),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
-/// The Rules — the owner's law. Non-negotiable.
 class _RulesCard extends StatelessWidget {
   const _RulesCard();
 

@@ -8,14 +8,23 @@
 // GET  /v1/release/meta?key=     → {version, sha256, size} for the auto-updater
 // GET  /admin                    → admin panel HTML
 // /v1/admin/...                  → admin API (login/logout/me/accounts/release)
-// GET  /dl/{key}                 → public release download
+// GET  /downloads               → Discord-gated release archive
+// GET  /dl/{key}                 → Discord-gated release download
 
 import { json, HDRS, safeEqual } from './util';
-import type { Env } from './util';
-import { handleOpenSession, handleHeartbeat, handleCloseSession, handleSignup } from './auth';
+import { handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
-import { handleCiRelease, serveDownload, serveReleaseMeta } from './releases';
+import { serveDownload, serveDownloadPage, serveReleaseMeta } from './releases';
+import { handleCiRelease } from './releases';
+import {
+  handleDiscordCallback,
+  handleDiscordLogin,
+  hasDownloadSession,
+  loginRedirect,
+} from './discord_auth';
+import { authenticateAppToken, finishAppDiscordLogin, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
+import { handleDiscordInteraction, reconcileExpiredAccountRoles } from './discord_bot';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -24,9 +33,27 @@ export default {
     if (url.pathname === '/healthz') return new Response('ok');
     if (url.pathname === '/v1/config') return serveConfig(req, env);
 
+    if (url.pathname === '/v1/auth/discord/start') {
+      if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      return startAppDiscordLogin(env);
+    }
+    if (url.pathname === '/v1/auth/discord/callback') return finishAppDiscordLogin(req, env);
+    if (url.pathname === '/v1/auth/discord/poll') {
+      if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      return pollAppDiscordLogin(req, env);
+    }
+    if (url.pathname === '/v1/auth/session') {
+      if (req.method !== 'DELETE') return json({ error: 'method_not_allowed' }, 405);
+      return revokeAppToken(req, env);
+    }
+    if (url.pathname === '/v1/discord/interactions') {
+      if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      return handleDiscordInteraction(req, env);
+    }
+
     if (url.pathname === '/v1/signup') {
       if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
-      return handleSignup(req, env);
+      return json({ error: 'discord_auth_required' }, 410);
     }
 
     if (url.pathname === '/v1/release/meta') {
@@ -34,14 +61,28 @@ export default {
       return serveReleaseMeta(req, env);
     }
 
-    if (url.pathname === '/v1/release/upload') return handleCiRelease(req, env);
+    if (url.pathname === '/v1/releases/publish') {
+      if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      return handleCiRelease(req, env);
+    }
+
+    if (url.pathname === '/auth/discord/login') return handleDiscordLogin(req, env);
+    if (url.pathname === '/auth/discord/callback') return handleDiscordCallback(req, env);
+
+    if (url.pathname === '/downloads') {
+      if (!(await hasDownloadAccess(req, env))) return loginRedirect('/downloads');
+      return serveDownloadPage(env);
+    }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
     if (sessMatch) return serveSession(req, env, sessMatch[1], sessMatch[2]);
 
     if (url.pathname === '/admin') return serveAdminPage();
 
-    if (url.pathname.startsWith('/dl/')) return serveDownload(req, env, url.pathname.slice(4));
+    if (url.pathname.startsWith('/dl/')) {
+      if (!(await hasDownloadAccess(req, env))) return loginRedirect(url.pathname);
+      return serveDownload(req, env, url.pathname.slice(4));
+    }
 
     // /v1/admin/{resource}[/{id}[/{action}]] — resource: login|logout|me|accounts|release
     const adminMatch = url.pathname.match(/^\/v1\/admin\/([a-z]+)(?:\/([^/]+))?(?:\/([a-z]+))?$/);
@@ -49,7 +90,15 @@ export default {
 
     return json({ error: 'not found' }, 404);
   },
-};
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(reconcileExpiredAccountRoles(env));
+  },
+} satisfies ExportedHandler<Env>;
+
+async function hasDownloadAccess(req: Request, env: Env): Promise<boolean> {
+  return (await hasDownloadSession(req, env)) || !!(await authenticateAppToken(req, env));
+}
 
 // Legacy shared-secret config path — byte-identical behavior, keep forever
 // (old app builds depend on it; static creds remain the emergency fallback).

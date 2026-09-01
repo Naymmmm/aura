@@ -46,6 +46,7 @@ class AppState extends ChangeNotifier {
   AuthErrorKind? get authError => _authError;
 
   ServerConfig? get serverConfig => _session?.config;
+  AccountStatus? get accountStatus => _session?.account;
 
   String? _activeServer;
   String? get activeServer => _activeServer;
@@ -104,15 +105,20 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Saved account creds from disk (for login-view prefill).
-  Future<({String accountId, String token})?> savedCreds() =>
-      _sessionService.saved();
-
   /// Restore a saved login, if any. Call once before runApp.
   Future<void> init() async {
     if (await _sessionService.hasSaved()) {
-      setPhase(VpnPhase.disconnected);
-      _log('welcome back — account found on disk');
+      try {
+        _session = await _sessionService.openSession();
+        _sessionOpen = true;
+        _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
+        setPhase(VpnPhase.disconnected);
+        _log('welcome back, ${_session!.account.displayName}');
+      } on SessionException catch (error) {
+        _authError = error.kind;
+        await _sessionService.forget();
+        setPhase(VpnPhase.loggedOut);
+      }
     } else {
       setPhase(VpnPhase.loggedOut);
     }
@@ -155,7 +161,9 @@ class AppState extends ChangeNotifier {
     _updating = true;
     notifyListeners();
     try {
-      await UpdateService().stage(v);
+      final saved = await _sessionService.saved();
+      if (saved == null) throw StateError('Discord login expired');
+      await UpdateService().stage(v, authToken: saved.token);
       _updateStaged = true;
       _log('update $v staged — restart to install');
       return true;
@@ -181,34 +189,14 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// Self-service signup: creates an account with zero credit (dead until
-  /// the admin adds days). Returns the shown-once creds, or null on failure.
-  Future<({String accountId, String token})?> signup(String name) async {
-    try {
-      return await _sessionService.signup(name);
-    } on SessionException catch (e) {
-      _authError = e.kind;
-      return null;
-    }
-  }
-
-  /// Opens a session with account creds; on success the app is ready to
-  /// connect. remember=false skips persisting the creds (and wipes any
-  /// saved ones). Failures land in [authError] for the login view.
-  Future<bool> login(
-    String accountId,
-    String token, {
-    bool remember = true,
-  }) async {
+  /// Opens Discord in the browser and exchanges approval for a 14-day app token.
+  Future<bool> loginWithDiscord() async {
     _authError = null;
     try {
-      _session = await _sessionService.openSession(
-        accountId,
-        token,
-        remember: remember,
-      );
+      _session = await _sessionService.loginWithDiscord();
       _sessionOpen = true;
-      _log('session opened for $accountId');
+      _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
+      _log('Discord session opened for ${_session!.account.displayName}');
       setPhase(VpnPhase.disconnected);
       return true;
     } on SessionException catch (e) {
@@ -257,10 +245,7 @@ class AppState extends ChangeNotifier {
           setPhase(VpnPhase.loggedOut);
           return false;
         }
-        _session = await _sessionService.openSession(
-          saved.accountId,
-          saved.token,
-        );
+        _session = await _sessionService.openSession();
         _sessionOpen = true;
       }
       final cfg = _session!.config;
@@ -392,10 +377,7 @@ class AppState extends ChangeNotifier {
         setPhase(VpnPhase.loggedOut);
         return;
       }
-      _session = await _sessionService.openSession(
-        saved.accountId,
-        saved.token,
-      );
+      _session = await _sessionService.openSession();
       _sessionOpen = true;
       _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
       _monthUsed = await _usage.monthUsed();

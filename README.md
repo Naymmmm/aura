@@ -30,10 +30,12 @@ infra/07-EnableUdpOverTcp.ps1  migrate servers to sing-box Naive for encrypted U
 
 ## App flow
 
-Aura login (account id + token) → `POST api.copal.run/v1/session` (checks out rotating
-server creds) → generate the Naive + UoT config → send it to `aura-core` over an
-authenticated loopback API → the already-privileged helper starts NaiveProxy
-and its embedded TUN/UoT v2 stack → live latency/traffic via Aura Core's API.
+Aura opens Discord OAuth in the browser → saves an Aura bearer token for 14 days →
+`POST api.copal.run/v1/session` checks out rotating server credentials → generates
+the Naive + UoT config → sends it to `aura-core` over an authenticated loopback API →
+the already-privileged helper starts NaiveProxy and its embedded TUN/UoT v2 stack →
+live latency/traffic via Aura Core's API. Legacy account IDs and generated API
+tokens are no longer accepted.
 
 The helper needs one administrator approval when first installed (and when the
 helper itself is upgraded), not on every connection. Closing Aura stops the
@@ -41,14 +43,71 @@ tunnel and waits for TUN/route cleanup before the desktop process exits.
 
 ## Downloads
 
+Open `https://api.copal.run/downloads` and sign in with Discord. The portal and
+all direct artifact URLs require membership of the configured Aura Discord role.
+
 | Artifact | URL |
 |---|---|
 | Windows | `https://api.copal.run/dl/latest` |
 | macOS (Apple Silicon) | `https://api.copal.run/dl/latest-macos` |
 | Source | `https://api.copal.run/dl/source` |
 
-No account? Create one in the app — it stays disabled until an admin adds
-credit (days) to it.
+Tagged builds keep immutable Windows, macOS, and tracked-source ZIPs in the
+version archive. The three stable URLs above follow the newest published tag.
+
+### Discord authentication and bot setup
+
+Create a Discord application with a bot and register both OAuth2 redirect URIs:
+
+```text
+https://api.copal.run/auth/discord/callback
+https://api.copal.run/v1/auth/discord/callback
+```
+
+Set the application's Interactions Endpoint URL to:
+
+```text
+https://api.copal.run/v1/discord/interactions
+```
+
+Configure the Worker secrets from `worker/` (values are read at runtime and are
+not committed):
+
+```powershell
+npx wrangler secret put DISCORD_CLIENT_ID
+npx wrangler secret put DISCORD_CLIENT_SECRET
+npx wrangler secret put DISCORD_GUILD_ID
+npx wrangler secret put DISCORD_PUBLIC_KEY
+npx wrangler secret put DISCORD_BOT_TOKEN
+npx wrangler secret put DISCORD_STAFF_ROLE_ID
+npx wrangler secret put DISCORD_LOG_CHANNEL_ID
+npx wrangler secret put DISCORD_TRIAL_CHANNEL_ID
+npx wrangler secret put DOWNLOAD_SESSION_SECRET
+npx wrangler secret put RELEASE_UPLOAD_TOKEN
+```
+
+Use a cryptographically random value for each signing/upload token. Add the same
+`RELEASE_UPLOAD_TOKEN` value to the GitHub Actions repository secret named
+`AURA_RELEASE_UPLOAD_TOKEN`. The required role is pinned in `wrangler.toml` to
+`1544233739322789948`. OAuth requests use `identify guilds.members.read`; access
+is rechecked when the short-lived download session expires. The app token is
+opaque, stored locally, and expires after 14 days.
+
+Register the guild commands after exporting the Discord application, guild, and
+bot token values in your shell:
+
+```powershell
+npm run register:discord
+```
+
+Run `/trial-panel` in the configured free-trial channel to post the green claim
+embed. Each Discord member can claim one 7-day trial with 1 GB. Staff commands
+are `/days`, `/budget`, `/trial-replenish`, `/account`, and `/logs`; every change
+is stored in the audit log and mirrored to the configured log channel. An hourly
+Worker schedule removes the customer/download role from expired accounts.
+
+No access yet? Claim the free trial from the Aura Discord free-trial channel,
+then continue with Discord in the app.
 
 ## The Rules
 

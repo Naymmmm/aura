@@ -108,21 +108,11 @@ const PAGE = `<!doctype html>
       <div class="head">
         <div>
           <h1>Aura<span class="dot">.</span> <span style="font-weight:400;color:var(--dim);font-size:16px">admin</span></h1>
-          <div class="sub">accounts · sessions · downloads</div>
+          <div class="sub">Discord accounts · sessions · downloads</div>
         </div>
         <div class="spacer"></div>
         <button id="refreshBtn" class="ghost">Refresh</button>
         <button id="logoutBtn" class="ghost">Log out</button>
-      </div>
-
-      <div class="card">
-        <div class="row">
-          <input id="newName" type="text" placeholder="account name (who is this for?)">
-          <input id="newBudget" type="number" min="1" value="100" style="max-width:90px" title="budget GB">
-          <input id="newDays" type="number" min="1" value="30" style="max-width:80px" title="lifetime days">
-          <button id="createBtn">Create account</button>
-        </div>
-        <div id="createErr" class="err"></div>
       </div>
 
       <div class="card">
@@ -150,26 +140,6 @@ const PAGE = `<!doctype html>
           <tbody id="rows"></tbody>
         </table>
         <div id="tableErr" class="err" style="padding:0 20px 16px"></div>
-      </div>
-    </div>
-  </div>
-
-  <div id="tokenModal" class="overlay hidden">
-    <div class="modal">
-      <h2>Account created</h2>
-      <div class="warn-line">⚠ Copy these now — the token is shown <b>once</b> and never stored.</div>
-      <div class="kv">
-        <div class="k">account id</div>
-        <div class="v" id="tokId"></div>
-        <div class="k">api token</div>
-        <div class="v" id="tokTok"></div>
-        <div class="k">expires</div>
-        <div class="v" id="tokExp"></div>
-      </div>
-      <div class="actions">
-        <button id="copyIdBtn" class="ghost">Copy id</button>
-        <button id="copyTokBtn">Copy token</button>
-        <button id="closeModalBtn" class="ghost">Done</button>
       </div>
     </div>
   </div>
@@ -368,56 +338,6 @@ const PAGE = `<!doctype html>
       if (r.ok) { toast(okMsg); loadAccounts(); }
       else toast('Failed: ' + (r.body && r.body.error || r.status));
     });
-  }
-
-  /* ---------- create ---------- */
-  $('createBtn').addEventListener('click', createAccount);
-  $('newName').addEventListener('keydown', function (e) { if (e.key === 'Enter') createAccount(); });
-
-  function createAccount() {
-    var name = $('newName').value.trim();
-    if (!name) { $('createErr').textContent = 'Give the account a name first.'; return; }
-    var budget = Number($('newBudget').value);
-    var days = Number($('newDays').value);
-    $('createBtn').disabled = true;
-    $('createErr').textContent = '';
-    api('/v1/admin/accounts', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: name, budget_gb: budget > 0 ? budget : 100, days: days > 0 ? days : 30 })
-    }).then(function (r) {
-      if (!r.ok) { $('createErr').textContent = 'Create failed: ' + (r.body && r.body.error || r.status); return; }
-      $('newName').value = '';
-      showToken(r.body);
-      loadAccounts();
-    }).catch(function () { $('createErr').textContent = 'Network error.'; })
-      .then(function () { $('createBtn').disabled = false; });
-  }
-
-  /* ---------- token modal ---------- */
-  function showToken(body) {
-    $('tokId').textContent = body.account_id;
-    $('tokTok').textContent = body.token;
-    $('tokExp').textContent = fmtDate(body.expires_at);
-    $('tokenModal').classList.remove('hidden');
-    $('copyTokBtn').focus();
-  }
-  $('closeModalBtn').addEventListener('click', function () { $('tokenModal').classList.add('hidden'); });
-  $('tokenModal').addEventListener('click', function (e) { if (e.target === $('tokenModal')) $('tokenModal').classList.add('hidden'); });
-  $('copyIdBtn').addEventListener('click', function () { copyText($('tokId').textContent, 'ID copied'); });
-  $('copyTokBtn').addEventListener('click', function () { copyText($('tokTok').textContent, 'Token copied — now close this box'); });
-
-  function copyText(txt, msg) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(txt).then(function () { toast(msg); });
-    } else {
-      var ta = document.createElement('textarea');
-      ta.value = txt;
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand('copy'); toast(msg); } catch (e) { toast('Copy failed — select it manually'); }
-      document.body.removeChild(ta);
-    }
   }
 
   /* ---------- release upload ---------- */

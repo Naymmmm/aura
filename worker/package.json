@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "register:discord": "node scripts/register-discord-commands.mjs"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.2",
     "@cloudflare/workers-types": "^5.0.0",
     "typescript": "^5.0.0",
+    "vitest": "^4.1.11",
     "wrangler": "^4.0.0"
   }
 }
