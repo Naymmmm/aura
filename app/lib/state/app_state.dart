@@ -106,7 +106,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// Restore a saved login, if any. Call once before runApp.
-  Future<void> init() async {
+  Future<void> init({bool checkForUpdates = true}) async {
     if (await _sessionService.hasSaved()) {
       try {
         _session = await _sessionService.openSession();
@@ -135,7 +135,9 @@ class AppState extends ChangeNotifier {
         setPhase(VpnPhase.error);
       }
     }
-    unawaited(checkForUpdate()); // silent; never blocks startup
+    if (checkForUpdates) {
+      unawaited(checkForUpdate()); // silent; never blocks startup
+    }
   }
 
   /// Quietly asks the worker whether a newer release exists. Failures are
