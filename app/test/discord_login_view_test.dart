@@ -36,7 +36,9 @@ void main() {
 
     await tester.tap(find.text('CONTINUE WITH DISCORD'));
     await tester.pump();
-    await tester.pump(const Duration(seconds: 1));
+    // The production app starts background update checks; do not wait for
+    // the continuously animated desktop shell to settle in this test.
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('FREE TRIAL'), findsOneWidget);
     expect(find.textContaining('1 GB'), findsWidgets);
