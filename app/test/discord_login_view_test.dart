@@ -27,7 +27,7 @@ class FakeSessionService extends SessionService {
 void main() {
   testWidgets('legacy account fields are replaced by Discord login and free-trial status', (tester) async {
     final state = AppState(sessionService: FakeSessionService());
-    await state.init(checkForUpdates: false);
+    await state.init(checkForUpdates: false, reconcileEngine: false);
     await tester.pumpWidget(AuraApp(state: state));
 
     expect(find.text('CONTINUE WITH DISCORD'), findsOneWidget);

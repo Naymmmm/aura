@@ -106,7 +106,10 @@ class AppState extends ChangeNotifier {
   }
 
   /// Restore a saved login, if any. Call once before runApp.
-  Future<void> init({bool checkForUpdates = true}) async {
+  Future<void> init({
+    bool checkForUpdates = true,
+    bool reconcileEngine = true,
+  }) async {
     if (await _sessionService.hasSaved()) {
       try {
         _session = await _sessionService.openSession();
@@ -125,7 +128,7 @@ class AppState extends ChangeNotifier {
     // A previous hard crash can leave the privileged engine alive. We cannot
     // safely claim it as this process's connection, so reconcile reality by
     // stopping it before showing a disconnected state.
-    if (await AuraCoreManager.isEngineRunning) {
+    if (reconcileEngine && await AuraCoreManager.isEngineRunning) {
       try {
         await AuraCoreManager.stop(configDir: await AuraCoreManager.dir);
         _log('cleaned up a tunnel left behind by an earlier app exit');
