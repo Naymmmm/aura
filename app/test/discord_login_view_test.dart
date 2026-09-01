@@ -35,7 +35,8 @@ void main() {
     expect(find.text('api token'), findsNothing);
 
     await tester.tap(find.text('CONTINUE WITH DISCORD'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
 
     expect(find.text('FREE TRIAL'), findsOneWidget);
     expect(find.textContaining('1 GB'), findsWidgets);

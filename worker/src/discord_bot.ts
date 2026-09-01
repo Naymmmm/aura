@@ -15,6 +15,12 @@ export async function reconcileExpiredAccountRoles(env: Env): Promise<number> {
   let removed = 0;
   for (const account of accounts) {
     if (account && (account.disabled || account.expires_at <= nowSec() || account.budget_gb <= 0)) {
+      if ((account.plan === 'standard' || account.plan === 'paid') && account.expires_at <= nowSec()) {
+        account.plan = 'none';
+        account.updated_at = nowSec();
+        await putDiscordAccount(env, account);
+        console.log(JSON.stringify({ message: 'Aura Standard expired', target_id: account.discord_id }));
+      }
       await syncCustomerRole(env, account);
       removed++;
     }
@@ -93,6 +99,8 @@ export async function handleVerifiedDiscordInteraction(interaction: unknown, env
     });
   }
   if (commandName === 'days') return manageDays(interaction, env, actor);
+  if (commandName === 'upgrade') return upgradeStandard(interaction, env, actor);
+  if (commandName === 'credits') return addCredits(interaction, env, actor);
   if (commandName === 'budget') return manageBudget(interaction, env, actor);
   if (commandName === 'trial-replenish') return replenishTrial(interaction, env, actor);
   if (commandName === 'account') return showAccount(interaction, env);
@@ -128,12 +136,62 @@ async function manageDays(interaction: unknown, env: Env, actor: Actor): Promise
   if (!account) return message('Account Not Found', 'That member must sign in or claim a trial first.', RED);
   const seconds = Math.floor(amount) * 86400;
   account.expires_at = action === 'add' ? Math.max(nowSec(), account.expires_at) + seconds : Math.max(0, account.expires_at - seconds);
-  if (action === 'add') account.plan = 'paid';
+  if (action === 'add') account.plan = 'standard';
   account.updated_at = nowSec();
   await putDiscordAccount(env, account);
   await recordAudit(env, action === 'add' ? 'days_added' : 'days_removed', actor, account, { days: Math.floor(amount) });
   await syncCustomerRole(env, account);
   return message(action === 'add' ? 'Days Added' : 'Days Removed', `<@${targetId}> now expires <t:${account.expires_at}:F> (<t:${account.expires_at}:R>).`, action === 'add' ? GREEN : AMBER);
+}
+
+export function creditDaysForAud(aud: number): { days: number; discounted: boolean; effectiveMonthlyAud: number } | null {
+  if (!Number.isFinite(aud) || aud < 2) return null;
+  const discounted = aud >= 5.4;
+  const effectiveMonthlyAud = discounted ? 1.8 : 2;
+  return {
+    days: Math.floor((aud / effectiveMonthlyAud) * 30 + 1e-9),
+    discounted,
+    effectiveMonthlyAud,
+  };
+}
+
+async function upgradeStandard(interaction: unknown, env: Env, actor: Actor): Promise<Response> {
+  const targetId = optionString(interaction, 'user');
+  if (!targetId) return message('Invalid Member', 'Choose the Aura member to upgrade.', RED);
+  const account = await getDiscordAccount(env, targetId);
+  if (!account) return message('Account Not Found', 'That member must sign in or claim a trial first.', RED);
+  account.plan = 'standard';
+  account.expires_at = Math.max(nowSec(), account.expires_at) + 30 * 86400;
+  account.disabled = false;
+  account.updated_at = nowSec();
+  await putDiscordAccount(env, account);
+  await recordAudit(env, 'standard_upgraded', actor, account, { days: 30, aud: 2 });
+  await syncCustomerRole(env, account);
+  return message('Upgraded to Standard', `<@${targetId}> received **30 days** of Standard Aura.\n\nExpires <t:${account.expires_at}:F> (<t:${account.expires_at}:R>).`, GREEN);
+}
+
+async function addCredits(interaction: unknown, env: Env, actor: Actor): Promise<Response> {
+  const targetId = optionString(interaction, 'user');
+  const aud = optionNumber(interaction, 'aud');
+  const conversion = aud === null ? null : creditDaysForAud(aud);
+  if (!targetId || !conversion || aud === null || aud > 10000) {
+    return message('Invalid Credits', 'Choose a member and add at least **A$2.00**.', RED);
+  }
+  const account = await getDiscordAccount(env, targetId);
+  if (!account) return message('Account Not Found', 'That member must sign in or claim a trial first.', RED);
+  account.plan = 'standard';
+  account.expires_at = Math.max(nowSec(), account.expires_at) + conversion.days * 86400;
+  account.disabled = false;
+  account.updated_at = nowSec();
+  await putDiscordAccount(env, account);
+  await recordAudit(env, 'credits_added', actor, account, { aud, days: conversion.days });
+  await syncCustomerRole(env, account);
+  const discount = conversion.discounted ? '\nBulk rate: **10% off** (A$1.80 / 30 days).' : '';
+  return message(
+    'Standard Credits Added',
+    `<@${targetId}>: **A$${aud.toFixed(2)}** converted to **${conversion.days} days**.${discount}\n\nExpires <t:${account.expires_at}:F> (<t:${account.expires_at}:R>).`,
+    GREEN
+  );
 }
 
 async function manageBudget(interaction: unknown, env: Env, actor: Actor): Promise<Response> {

@@ -182,7 +182,7 @@ async function extendAccount(req: Request, env: Env, id: string): Promise<Respon
   const acct = await getDiscordAccount(env, id);
   if (!acct) return adminJson({ error: 'not found' }, 404);
   acct.expires_at = Math.max(nowSec(), acct.expires_at) + days * 86400;
-  acct.plan = 'paid';
+  acct.plan = 'standard';
   acct.updated_at = nowSec();
   await putDiscordAccount(env, acct);
   return adminJson({ expires_at: acct.expires_at }, 200);

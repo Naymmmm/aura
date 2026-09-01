@@ -106,6 +106,73 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
   return json({ version, artifact, key: archiveKey, size: file.size, sha256 }, 200);
 }
 
+export async function handleCiReleaseAnnouncement(req: Request, env: Env): Promise<Response> {
+  const auth = req.headers.get('authorization') ?? '';
+  const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!supplied || !(await safeEqual(supplied, env.RELEASE_UPLOAD_TOKEN))) {
+    return json({ error: 'forbidden' }, 401);
+  }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: 'bad_request' }, 400);
+  }
+  if (!body || typeof body !== 'object') return json({ error: 'bad_request' }, 400);
+  const version = 'version' in body && typeof body.version === 'string' ? body.version : '';
+  const changelog = 'changelog' in body && typeof body.changelog === 'string' ? body.changelog.trim() : '';
+  if (!VERSION_RE.test(version) || !isReleaseChangelog(changelog)) {
+    return json({ error: 'bad_request' }, 400);
+  }
+
+  const manifest = await readArchiveManifest(env.RELEASES, version);
+  if (!manifest.artifacts.windows || !manifest.artifacts.macos || !manifest.artifacts.source) {
+    return json({ error: 'release_incomplete' }, 409);
+  }
+  const markerKey = `archive/${version}/announcement.json`;
+  if (await env.RELEASES.head(markerKey)) {
+    return json({ announced: false, already_announced: true }, 200);
+  }
+  if (!env.DISCORD_RELEASE_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) {
+    return json({ error: 'not_configured' }, 503);
+  }
+
+  const response = await fetch(
+    `https://discord.com/api/v10/channels/${env.DISCORD_RELEASE_CHANNEL_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: changelog, allowed_mentions: { roles: [env.DISCORD_REQUIRED_ROLE_ID] } }),
+    }
+  );
+  if (!response.ok) {
+    console.error(JSON.stringify({ message: 'Aura release announcement failed', version, status: response.status }));
+    return json({ error: 'discord_unavailable' }, 502);
+  }
+  const discordBody: unknown = await response.json();
+  const messageId = discordBody && typeof discordBody === 'object' && 'id' in discordBody &&
+      typeof discordBody.id === 'string' ? discordBody.id : '';
+  if (!messageId) return json({ error: 'discord_unavailable' }, 502);
+  await env.RELEASES.put(markerKey, JSON.stringify({ message_id: messageId, announced_at: Date.now() }), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+  return json({ announced: true, message_id: messageId }, 200);
+}
+
+function isReleaseChangelog(value: string): boolean {
+  return value.length > 0 &&
+    value.length <= 2000 &&
+    /^# v\d+\.\d+/m.test(value) &&
+    value.includes('```diff') &&
+    value.includes('[Windows Download](https://api.copal.run/dl/latest)') &&
+    value.includes('[macOS Download](https://api.copal.run/dl/latest-macos)') &&
+    value.includes('[Source Download](https://api.copal.run/dl/source)') &&
+    value.endsWith('<@&1544233739322789948>');
+}
+
 type ArchiveArtifact = 'windows' | 'macos' | 'source';
 
 interface ArchiveArtifactMeta {
@@ -218,7 +285,7 @@ async function updateArchiveIndex(bucket: R2Bucket, manifest: ArchiveManifest): 
   });
 }
 
-export async function serveDownloadPage(env: Env): Promise<Response> {
+export async function serveDownloadPage(env: Env, canDownloadSource: boolean): Promise<Response> {
   const indexObject = await env.RELEASES.get('archive/index.json');
   let versions: ArchiveIndex['versions'] = [];
   if (indexObject) {
@@ -247,6 +314,7 @@ export async function serveDownloadPage(env: Env): Promise<Response> {
   const cards = manifests
     .map((manifest) => {
       const links = (['windows', 'macos', 'source'] as const)
+        .filter((artifact) => artifact !== 'source' || canDownloadSource)
         .filter((artifact) => manifest.artifacts[artifact])
         .map((artifact) => {
           const label = artifact === 'windows' ? 'Windows' : artifact === 'macos' ? 'macOS' : 'Source code';
@@ -254,19 +322,20 @@ export async function serveDownloadPage(env: Env): Promise<Response> {
         })
         .join('');
       return `<article><h2>${manifest.version}</h2><div class="links">${links}</div></article>`;
-    })
-    .join('');
+    });
+  const latest = cards[0] ?? '';
+  const older = cards.slice(1).join('');
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aura downloads</title><style>
 :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui;background:#090b10;color:#f4f5f7}body{margin:0}
 main{width:min(760px,calc(100% - 32px));margin:64px auto}header{margin-bottom:32px}h1{font-size:clamp(2rem,7vw,4rem);margin:0}
-p{color:#a9afbb}article{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 0;border-top:1px solid #272b35}
+p{color:#a9afbb}.latest-release{padding:24px;border:1px solid #3b4250;border-radius:18px;margin-bottom:34px}.latest-release>p,.older-releases>p{margin:0 0 10px;text-transform:uppercase;letter-spacing:.12em;font-size:.72rem}.older-releases{border-left:1px solid #3b4250;padding-left:24px}article{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 0;border-top:1px solid #272b35}
 h2{margin:0;font-size:1.15rem}.links{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px}a{color:#090b10;background:#d9ff65;padding:10px 14px;border-radius:999px;text-decoration:none;font-weight:700}
 .empty{padding:32px 0;border-top:1px solid #272b35}@media(max-width:520px){article{align-items:flex-start;flex-direction:column}.links{justify-content:flex-start}}
-</style></head><body><main><header><h1>Aura archive</h1><p>Downloads are available to authorized Aura Discord members.</p></header>
-${cards || '<p class="empty">No releases have been published yet.</p>'}</main></body></html>`;
+</style></head><body><main><header><h1>Aura Downloads</h1><p>Current and archived builds for authorized Aura Discord members.</p></header>
+${latest ? `<section class="latest-release"><p>Latest version</p>${latest}</section><section class="older-releases"><p>Older versions</p>${older || '<p class="empty">No older releases yet.</p>'}</section>` : '<p class="empty">No releases have been published yet.</p>'}</main></body></html>`;
   return new Response(html, {
     headers: {
       'content-type': 'text/html; charset=utf-8',

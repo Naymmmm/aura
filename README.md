@@ -82,6 +82,7 @@ npx wrangler secret put DISCORD_BOT_TOKEN
 npx wrangler secret put DISCORD_STAFF_ROLE_ID
 npx wrangler secret put DISCORD_LOG_CHANNEL_ID
 npx wrangler secret put DISCORD_TRIAL_CHANNEL_ID
+npx wrangler secret put DISCORD_RELEASE_CHANNEL_ID
 npx wrangler secret put DOWNLOAD_SESSION_SECRET
 npx wrangler secret put RELEASE_UPLOAD_TOKEN
 ```
@@ -102,9 +103,19 @@ npm run register:discord
 
 Run `/trial-panel` in the configured free-trial channel to post the green claim
 embed. Each Discord member can claim one 7-day trial with 1 GB. Staff commands
-are `/days`, `/budget`, `/trial-replenish`, `/account`, and `/logs`; every change
+include `/upgrade` (30 Standard days), `/credits` (AUD-to-days), `/days`,
+`/budget`, `/trial-replenish`, `/account`, and `/logs`. A$2 buys 30 days; amounts
+covering at least three months use the 10%-off A$1.80 monthly rate. Every change
 is stored in the audit log and mirrored to the configured log channel. An hourly
-Worker schedule removes the customer/download role from expired accounts.
+Worker schedule removes the customer/download role and downgrades expired
+Standard accounts. Free trials may download app binaries but not source code.
+
+Tagged releases require `releases/<tag>.md`. After all three archives upload,
+the Worker posts that changelog in `DISCORD_RELEASE_CHANNEL_ID` as the Aura bot.
+The bot role needs permission to mention the Customers role so release pings
+notify `<@&1544233739322789948>`.
+The optional always-online Gateway presence service and VPS instructions live in
+`presence/`; Cloudflare remains responsible for all bot behavior.
 
 No access yet? Claim the free trial from the Aura Discord free-trial channel,
 then continue with Discord in the app.

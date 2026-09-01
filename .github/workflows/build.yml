@@ -80,7 +80,7 @@ jobs:
       - run: flutter analyze
         working-directory: app
 
-      - run: flutter test
+      - run: flutter test --concurrency=1 --reporter=expanded
         working-directory: app
 
       - run: flutter build windows --release
@@ -146,7 +146,7 @@ jobs:
       - run: flutter analyze
         working-directory: app
 
-      - run: flutter test
+      - run: flutter test --concurrency=1 --reporter=expanded
         working-directory: app
 
       - run: flutter build macos --release
@@ -186,6 +186,9 @@ jobs:
         with:
           path: dist
 
+      - name: Validate release changelog
+        run: node worker/scripts/validate-release-changelog.mjs "releases/${GITHUB_REF_NAME}.md" "${GITHUB_REF_NAME}"
+
       - name: Build source archive
         run: git archive --format=zip --prefix="aura-${GITHUB_REF_NAME}/" --output aura-source.zip HEAD
 
@@ -206,8 +209,23 @@ jobs:
           publish macos dist/aura-macos-arm64/aura-macos-arm64.zip
           publish source aura-source.zip
 
+      - name: Announce release in Discord
+        env:
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          jq -n \
+            --arg version "${GITHUB_REF_NAME}" \
+            --rawfile changelog "releases/${GITHUB_REF_NAME}.md" \
+            '{version: $version, changelog: $changelog}' > release-announcement.json
+          curl --fail-with-body --retry 3 --retry-all-errors \
+            -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @release-announcement.json \
+            https://api.copal.run/v1/releases/announce
+
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: releases/${{ github.ref_name }}.md
           files: |
             dist/**/*.zip
             aura-source.zip

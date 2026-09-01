@@ -18,6 +18,7 @@ export default defineConfig({
           DISCORD_STAFF_ROLE_ID: '800000000000000001',
           DISCORD_LOG_CHANNEL_ID: '700000000000000099',
           DISCORD_TRIAL_CHANNEL_ID: '700000000000000001',
+          DISCORD_RELEASE_CHANNEL_ID: 'discord-release-channel-id',
           DOWNLOAD_SESSION_SECRET: 'test-download-session-secret',
           RELEASE_UPLOAD_TOKEN: 'test-release-upload-token',
         },

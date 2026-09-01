@@ -11,4 +11,11 @@ describe('release workflow', () => {
     expect(workflow).toContain('publish macos');
     expect(workflow).toContain('publish source');
   });
+
+  it('requires a versioned changelog and publishes it after all artifacts', () => {
+    expect(workflow).toContain('releases/${GITHUB_REF_NAME}.md');
+    expect(workflow).toContain('validate-release-changelog.mjs');
+    expect(workflow).toContain('/v1/releases/announce');
+    expect(workflow).toContain('body_path: releases/${{ github.ref_name }}.md');
+  });
 });

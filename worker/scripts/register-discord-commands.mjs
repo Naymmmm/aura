@@ -14,6 +14,18 @@ const commands = [
     default_member_permissions: '0',
   },
   {
+    name: 'upgrade',
+    description: 'Upgrade an Aura member to Standard for 30 days',
+    default_member_permissions: '0',
+    options: [user],
+  },
+  {
+    name: 'credits',
+    description: 'Convert an AUD payment into Standard Aura days',
+    default_member_permissions: '0',
+    options: [user, { name: 'aud', description: 'AUD received (minimum A$2)', type: 10, min_value: 2, max_value: 10000, required: true }],
+  },
+  {
     name: 'days',
     description: 'Add or remove Aura access days',
     default_member_permissions: '0',

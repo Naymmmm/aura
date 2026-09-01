@@ -1,0 +1,7 @@
+services:
+  aura-presence:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?set DISCORD_BOT_TOKEN in .env}

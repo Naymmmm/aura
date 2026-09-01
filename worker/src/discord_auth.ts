@@ -47,14 +47,20 @@ export function loginRedirect(returnTo: string): Response {
 }
 
 export async function hasDownloadSession(req: Request, env: Env): Promise<boolean> {
+  return (await downloadSessionDiscordId(req, env)) !== null;
+}
+
+export async function downloadSessionDiscordId(req: Request, env: Env): Promise<string | null> {
   const raw = readCookie(req, DOWNLOAD_COOKIE);
-  if (!raw) return false;
+  if (!raw) return null;
   const parts = raw.split('.');
-  if (parts.length !== 3) return false;
+  if (parts.length !== 3) return null;
   const [userId, rawExp, signature] = parts;
   const exp = Number(rawExp);
-  if (!/^\d+$/.test(userId) || !Number.isFinite(exp) || exp <= nowSec()) return false;
-  return safeEqual(signature, await hmacHex(env.DOWNLOAD_SESSION_SECRET, `${userId}:${exp}`));
+  if (!/^\d+$/.test(userId) || !Number.isFinite(exp) || exp <= nowSec()) return null;
+  return await safeEqual(signature, await hmacHex(env.DOWNLOAD_SESSION_SECRET, `${userId}:${exp}`))
+    ? userId
+    : null;
 }
 
 export function handleDiscordLogin(req: Request, env: Env): Response {

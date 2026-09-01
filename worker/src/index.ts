@@ -16,15 +16,16 @@ import { handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
 import { serveDownload, serveDownloadPage, serveReleaseMeta } from './releases';
-import { handleCiRelease } from './releases';
+import { handleCiRelease, handleCiReleaseAnnouncement } from './releases';
 import {
   handleDiscordCallback,
   handleDiscordLogin,
-  hasDownloadSession,
+  downloadSessionDiscordId,
   loginRedirect,
 } from './discord_auth';
 import { authenticateAppToken, finishAppDiscordLogin, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
 import { handleDiscordInteraction, reconcileExpiredAccountRoles } from './discord_bot';
+import { getDiscordAccount } from './accounts_v2';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -65,13 +66,18 @@ export default {
       if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
       return handleCiRelease(req, env);
     }
+    if (url.pathname === '/v1/releases/announce') {
+      if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+      return handleCiReleaseAnnouncement(req, env);
+    }
 
     if (url.pathname === '/auth/discord/login') return handleDiscordLogin(req, env);
     if (url.pathname === '/auth/discord/callback') return handleDiscordCallback(req, env);
 
     if (url.pathname === '/downloads') {
-      if (!(await hasDownloadAccess(req, env))) return loginRedirect('/downloads');
-      return serveDownloadPage(env);
+      const access = await downloadAccess(req, env);
+      if (!access.authenticated) return loginRedirect('/downloads');
+      return serveDownloadPage(env, access.canDownloadSource);
     }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
@@ -80,8 +86,11 @@ export default {
     if (url.pathname === '/admin') return serveAdminPage();
 
     if (url.pathname.startsWith('/dl/')) {
-      if (!(await hasDownloadAccess(req, env))) return loginRedirect(url.pathname);
-      return serveDownload(req, env, url.pathname.slice(4));
+      const access = await downloadAccess(req, env);
+      if (!access.authenticated) return loginRedirect(url.pathname);
+      const key = url.pathname.slice(4);
+      if (isSourceKey(key) && !access.canDownloadSource) return json({ error: 'standard_required' }, 403);
+      return serveDownload(req, env, key);
     }
 
     // /v1/admin/{resource}[/{id}[/{action}]] — resource: login|logout|me|accounts|release
@@ -96,9 +105,18 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-async function hasDownloadAccess(req: Request, env: Env): Promise<boolean> {
-  return (await hasDownloadSession(req, env)) || !!(await authenticateAppToken(req, env));
+async function downloadAccess(req: Request, env: Env): Promise<{ authenticated: boolean; canDownloadSource: boolean }> {
+  const appAccount = await authenticateAppToken(req, env);
+  if (appAccount) return { authenticated: true, canDownloadSource: isStandard(appAccount.account.plan) };
+  const discordId = await downloadSessionDiscordId(req, env);
+  if (!discordId) return { authenticated: false, canDownloadSource: false };
+  const account = await getDiscordAccount(env, discordId);
+  return { authenticated: true, canDownloadSource: !!account && isStandard(account.plan) };
 }
+
+function isStandard(plan: string): boolean { return plan === 'standard' || plan === 'paid'; }
+
+function isSourceKey(key: string): boolean { return key === 'source' || /\/source\.zip$/.test(key); }
 
 // Legacy shared-secret config path — byte-identical behavior, keep forever
 // (old app builds depend on it; static creds remain the emergency fallback).

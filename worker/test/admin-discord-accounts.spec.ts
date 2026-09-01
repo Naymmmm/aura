@@ -44,7 +44,7 @@ describe('Discord account admin fallback', () => {
     expect(extend.status).toBe(200);
     const account = await env.SERVERS.get(`account:${id}`, 'json') as { expires_at: number; plan: string };
     expect(account.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000) + 2 * 86400);
-    expect(account.plan).toBe('paid');
+    expect(account.plan).toBe('standard');
   });
 
   it('disables legacy account creation because Discord is the identity source', async () => {

@@ -20,7 +20,7 @@ void main() {
       if (request.url.path == '/v1/release/meta') {
         return http.Response(jsonEncode({'version': 'v9.9.9', 'sha256': hash}), 200);
       }
-      if (request.url.path == '/dl/latest') {
+      if (request.url.path == '/dl/${UpdateService.platformKey()}') {
         expect(request.headers['authorization'], 'Bearer aura_saved_token');
         return http.Response.bytes(zip, 200);
       }

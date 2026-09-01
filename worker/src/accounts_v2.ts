@@ -1,6 +1,6 @@
 import { nowSec } from './util';
 
-export type AccountPlan = 'none' | 'free_trial' | 'paid';
+export type AccountPlan = 'none' | 'free_trial' | 'standard' | 'paid';
 
 export interface DiscordAccount {
   discord_id: string;
@@ -70,6 +70,6 @@ function isDiscordAccount(value: unknown): value is DiscordAccount {
     'disabled' in value &&
     typeof value.disabled === 'boolean' &&
     'plan' in value &&
-    (value.plan === 'none' || value.plan === 'free_trial' || value.plan === 'paid')
+    (value.plan === 'none' || value.plan === 'free_trial' || value.plan === 'standard' || value.plan === 'paid')
   );
 }

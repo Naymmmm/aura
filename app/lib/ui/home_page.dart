@@ -133,7 +133,7 @@ class _Header extends StatelessWidget {
               ),
               if (state.accountStatus case final account?)
                 Text(
-                  '${account.plan == AccountPlan.freeTrial ? 'FREE TRIAL' : 'PAID'} • ${account.budgetGb} GB • ${account.displayName}',
+                  '${account.plan == AccountPlan.freeTrial ? 'FREE TRIAL' : 'STANDARD'} • ${account.budgetGb} GB • ${account.displayName}',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: account.plan == AccountPlan.freeTrial
                         ? theme.colorScheme.tertiary

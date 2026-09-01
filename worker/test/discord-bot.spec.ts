@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
-import { handleVerifiedDiscordInteraction, reconcileExpiredAccountRoles, verifyDiscordInteraction } from '../src/discord_bot';
+import { creditDaysForAud, handleVerifiedDiscordInteraction, reconcileExpiredAccountRoles, verifyDiscordInteraction } from '../src/discord_bot';
 const staffRole = '800000000000000001';
 const trialChannel = '700000000000000001';
 
@@ -173,6 +173,66 @@ describe('Aura Discord bot', () => {
     expect(account.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000) + 14 * 86400);
   });
 
+  it('converts AUD credits into days with a 10% discount for three months or more', () => {
+    expect(creditDaysForAud(1.99)).toBeNull();
+    expect(creditDaysForAud(2)).toEqual({ days: 30, discounted: false, effectiveMonthlyAud: 2 });
+    expect(creditDaysForAud(4)).toEqual({ days: 60, discounted: false, effectiveMonthlyAud: 2 });
+    expect(creditDaysForAud(5.4)).toEqual({ days: 90, discounted: true, effectiveMonthlyAud: 1.8 });
+    expect(creditDaysForAud(9)).toEqual({ days: 150, discounted: true, effectiveMonthlyAud: 1.8 });
+  });
+
+  it('upgrades an Aura account to Standard for 30 days', async () => {
+    const target = '600000000000000025';
+    await env.SERVERS.put(
+      `account:${target}`,
+      JSON.stringify({
+        discord_id: target, username: 'upgrade', display_name: 'Upgrade Me', created_at: 1,
+        expires_at: 0, budget_gb: 1, disabled: false, plan: 'none',
+      })
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
+
+    const response = await handleVerifiedDiscordInteraction(
+      command('upgrade', [{ name: 'user', type: 6, value: target }]),
+      env
+    );
+    const account = await env.SERVERS.get(`account:${target}`, 'json') as { plan: string; expires_at: number };
+
+    expect(account.plan).toBe('standard');
+    expect(account.expires_at).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + 30 * 86400 - 2);
+    expect(await response.json()).toMatchObject({
+      data: { embeds: [expect.objectContaining({ title: 'Upgraded to Standard' })] },
+    });
+  });
+
+  it('adds Standard days from an AUD credit amount', async () => {
+    const target = '600000000000000026';
+    await env.SERVERS.put(
+      `account:${target}`,
+      JSON.stringify({
+        discord_id: target, username: 'credits', display_name: 'Credits User', created_at: 1,
+        expires_at: 0, budget_gb: 1, disabled: false, plan: 'free_trial', trial_claimed_at: 1,
+      })
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
+
+    const response = await handleVerifiedDiscordInteraction(
+      command('credits', [
+        { name: 'user', type: 6, value: target },
+        { name: 'aud', type: 10, value: 5.4 },
+      ]),
+      env
+    );
+    const account = await env.SERVERS.get(`account:${target}`, 'json') as { plan: string; expires_at: number };
+
+    expect(account.plan).toBe('standard');
+    expect(account.expires_at).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + 90 * 86400 - 2);
+    const body = await response.json<{ data: { embeds: Array<{ description: string }> } }>();
+    expect(body.data.embeds[0].description).toContain('**A$5.40**');
+    expect(body.data.embeds[0].description).toContain('**90 days**');
+    expect(body.data.embeds[0].description).toContain('10%');
+  });
+
   it('denies entitlement commands to members without the staff role', async () => {
     const response = await handleVerifiedDiscordInteraction(
       command('budget', [{ name: 'user', type: 6, value: '123' }, { name: 'amount', type: 10, value: 1 }], []),
@@ -219,13 +279,13 @@ describe('Aura Discord bot', () => {
     expect(logBody.data.embeds[0].description).toContain('days added');
   });
 
-  it('removes the customer role when an account expires naturally', async () => {
+  it('removes the customer role and downgrades Standard when an account expires naturally', async () => {
     const target = '600000000000000040';
     await env.SERVERS.put(
       `account:${target}`,
       JSON.stringify({
         discord_id: target, username: 'expired', display_name: 'Expired User', created_at: 1,
-        expires_at: 1, budget_gb: 1, disabled: false, plan: 'free_trial', trial_claimed_at: 1,
+        expires_at: 1, budget_gb: 1, disabled: false, plan: 'standard', trial_claimed_at: 1,
       })
     );
     const outbound = vi.fn(async () => new Response(null, { status: 204 }));
@@ -238,6 +298,7 @@ describe('Aura Discord bot', () => {
       expect.stringContaining(`/members/${target}/roles/1544233739322789948`),
       expect.objectContaining({ method: 'DELETE' })
     );
+    expect(await env.SERVERS.get(`account:${target}`, 'json')).toMatchObject({ plan: 'none' });
   });
 
   it('still grants the customer role when the optional Discord log post fails', async () => {

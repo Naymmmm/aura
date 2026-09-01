@@ -21,7 +21,7 @@ async function publishArtifact(version: string, artifact: 'windows' | 'macos' | 
   );
 }
 
-async function downloadSessionCookie(): Promise<string> {
+async function downloadSessionCookie(plan?: 'free_trial' | 'standard'): Promise<string> {
   const login = await worker.fetch(request('/auth/discord/login'), env);
   const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
   const stateCookie = login.headers.get('set-cookie')!.split(';', 1)[0];
@@ -41,6 +41,16 @@ async function downloadSessionCookie(): Promise<string> {
     env
   );
   vi.unstubAllGlobals();
+  if (plan) {
+    await env.SERVERS.put(
+      'account:123456789',
+      JSON.stringify({
+        discord_id: '123456789', username: 'auraking', display_name: 'Aura King', created_at: 1,
+        expires_at: Math.floor(Date.now() / 1000) + 86400, budget_gb: 1, disabled: false, plan,
+        ...(plan === 'free_trial' ? { trial_claimed_at: 1 } : {}),
+      })
+    );
+  }
   const match = callback.headers.get('set-cookie')?.match(/aura_download=([^;,\s]+)/);
   if (!match) throw new Error('download session cookie missing');
   return `aura_download=${match[1]}`;
@@ -157,19 +167,97 @@ describe('Discord-gated downloads', () => {
     expect(response.status).toBe(400);
   });
 
+  it('announces a completed release changelog through the Aura bot only once', async () => {
+    const version = 'v0.7.0';
+    await publishArtifact(version, 'windows', 'windows-v7');
+    await publishArtifact(version, 'macos', 'macos-v7');
+    await publishArtifact(version, 'source', 'source-v7');
+    const changelog = '# v0.70\n```diff\n+ Discord access:\n- ships automatically\n```\n\n[Windows Download](https://api.copal.run/dl/latest)\n[macOS Download](https://api.copal.run/dl/latest-macos)\n[Source Download](https://api.copal.run/dl/source)\n\n<@&1544233739322789948>';
+    const outbound = vi.fn(async () => Response.json({ id: 'discord-message-id' }));
+    vi.stubGlobal('fetch', outbound);
+
+    const announce = () => worker.fetch(
+      request('/v1/releases/announce', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-release-upload-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ version, changelog }),
+      }),
+      env
+    );
+    const first = await announce();
+    const second = await announce();
+
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ announced: true, message_id: 'discord-message-id' });
+    expect(await second.json()).toMatchObject({ announced: false, already_announced: true });
+    expect(outbound).toHaveBeenCalledTimes(1);
+    expect(outbound).toHaveBeenCalledWith(
+      'https://discord.com/api/v10/channels/discord-release-channel-id/messages',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ content: changelog, allowed_mentions: { roles: ['1544233739322789948'] } }),
+      })
+    );
+  });
+
+  it('refuses to announce before Windows, macOS, and source are archived', async () => {
+    const response = await worker.fetch(
+      request('/v1/releases/announce', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test-release-upload-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          version: 'v0.8.0',
+          changelog: '# v0.80\n```diff\n+ Release:\n- pending artifacts\n```\n\n[Windows Download](https://api.copal.run/dl/latest)\n[macOS Download](https://api.copal.run/dl/latest-macos)\n[Source Download](https://api.copal.run/dl/source)\n\n<@&1544233739322789948>',
+        }),
+      }),
+      env
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'release_incomplete' });
+  });
+
   it('renders the version archive for an authorized Discord member', async () => {
     await publishArtifact('v0.4.0', 'windows', 'windows-v4');
     await publishArtifact('v0.4.0', 'source', 'source-v4');
-    const cookie = await downloadSessionCookie();
+    const cookie = await downloadSessionCookie('standard');
 
     const response = await worker.fetch(request('/downloads', { headers: { cookie } }), env);
     const html = await response.text();
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
+    expect(html).toContain('<h1>Aura Downloads</h1>');
+    expect(html).toContain('class="latest-release"');
+    expect(html).toContain('class="older-releases"');
     expect(html).toContain('v0.4.0');
     expect(html).toContain('/dl/archive/v0.4.0/windows.zip');
     expect(html).toContain('/dl/archive/v0.4.0/source.zip');
+  });
+
+  it('hides source archives from free-trial members', async () => {
+    await publishArtifact('v0.4.1', 'windows', 'windows-v41');
+    await publishArtifact('v0.4.1', 'source', 'source-v41');
+    const cookie = await downloadSessionCookie('free_trial');
+
+    const response = await worker.fetch(request('/downloads', { headers: { cookie } }), env);
+    const html = await response.text();
+    const directSource = await worker.fetch(
+      request('/dl/archive/v0.4.1/source.zip', { headers: { cookie } }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('/dl/archive/v0.4.1/windows.zip');
+    expect(html).not.toContain('/dl/archive/v0.4.1/source.zip');
+    expect(directSource.status).toBe(403);
+    expect(await directSource.json()).toEqual({ error: 'standard_required' });
   });
 
   it('serves immutable archive files and latest aliases to an authorized member', async () => {
@@ -213,6 +301,33 @@ describe('Discord-gated downloads', () => {
 
     expect(response.status).toBe(200);
     expect(new TextDecoder().decode(await response.arrayBuffer())).toBe('windows-v6');
+  });
+
+  it('denies source downloads to a free-trial Flutter token', async () => {
+    await publishArtifact('v0.6.1', 'source', 'source-v61');
+    const token = `aura_${'c'.repeat(64)}`;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+    const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    await env.SERVERS.put(
+      `app-session:${hash}`,
+      JSON.stringify({ discord_id: '987654322', expires_at: Math.floor(Date.now() / 1000) + 86400 })
+    );
+    await env.SERVERS.put(
+      'account:987654322',
+      JSON.stringify({
+        discord_id: '987654322', username: 'trial-source', display_name: 'Trial Source', created_at: 1,
+        expires_at: Math.floor(Date.now() / 1000) + 86400, budget_gb: 1, disabled: false,
+        plan: 'free_trial', trial_claimed_at: 1,
+      })
+    );
+
+    const response = await worker.fetch(
+      request('/dl/source', { headers: { authorization: `Bearer ${token}` } }),
+      env
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'standard_required' });
   });
 
   it('issues a download session only when Discord returns the required role', async () => {

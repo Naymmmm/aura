@@ -17,7 +17,7 @@ enum AuthErrorKind {
   network,
 }
 
-enum AccountPlan { none, freeTrial, paid }
+enum AccountPlan { none, freeTrial, standard }
 
 class SessionException implements Exception {
   SessionException(this.kind);
@@ -54,7 +54,7 @@ class AccountStatus {
       budgetGb: (json['budget_gb'] as num?)?.toInt() ?? 0,
       plan: switch (rawPlan) {
         'free_trial' => AccountPlan.freeTrial,
-        'paid' => AccountPlan.paid,
+        'standard' || 'paid' => AccountPlan.standard,
         _ => AccountPlan.none,
       },
     );
