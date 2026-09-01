@@ -13,6 +13,9 @@
   and sing-box configuration assets.
 - Pins proxy transports to pre-tunnel IPv4 routes and captures dual-stack IPv6
   traffic to prevent routing loops and bypasses.
+- Forces browser QUIC to fall back to HTTP/2 because the current server-side
+  Naive UoT implementation stalls large QUIC flows; other UDP remains on UoT.
+- Measures real end-to-end TLS latency and enables TUN TCP receive autotuning.
 
 ## 0.2.6
 

@@ -105,3 +105,15 @@ func TestUOTv2ThroughSOCKSConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestQUICFallsBackToTCP(t *testing.T) {
+	proxy := newMultiProxy(nil)
+	_, err := proxy.DialUDP(&M.Metadata{
+		Network: M.UDP,
+		DstIP:   netip.MustParseAddr("1.1.1.1"),
+		DstPort: 443,
+	})
+	if err == nil {
+		t.Fatal("expected UDP/443 to be rejected so the browser falls back to HTTP/2")
+	}
+}

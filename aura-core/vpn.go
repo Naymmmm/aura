@@ -11,6 +11,7 @@ import (
 	t2core "github.com/xjasonlyu/tun2socks/v2/core"
 	"github.com/xjasonlyu/tun2socks/v2/core/device"
 	"github.com/xjasonlyu/tun2socks/v2/core/device/tun"
+	"github.com/xjasonlyu/tun2socks/v2/core/option"
 	"github.com/xjasonlyu/tun2socks/v2/tunnel"
 	"github.com/xjasonlyu/tun2socks/v2/tunnel/statistic"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -82,6 +83,9 @@ func startVPN(stateDir, naivePath string, cfg auraConfig) (_ *vpnRuntime, err er
 	rt.stack, err = t2core.CreateStack(&t2core.Config{
 		LinkEndpoint:     rt.device,
 		TransportHandler: rt.tunnel,
+		Options: []option.Option{
+			option.WithTCPModerateReceiveBuffer(true),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create TUN netstack: %w", err)

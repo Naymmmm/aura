@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -58,6 +59,13 @@ func (p *multiProxy) DialContext(ctx context.Context, metadata *M.Metadata) (net
 }
 
 func (p *multiProxy) DialUDP(metadata *M.Metadata) (net.PacketConn, error) {
+	// QUIC over UoT creates a reliable stream inside another reliable stream,
+	// and current sing-box Naive inbounds corrupt or stall larger QUIC flows.
+	// Failing UDP/443 makes browsers immediately fall back to HTTP/2 while all
+	// other UDP (DNS, STUN, games, calls) still uses native UoT v2.
+	if metadata.DstPort == 443 {
+		return nil, errors.New("QUIC disabled; use HTTP/2 over TCP")
+	}
 	target := socks5.ParseAddrString(metadata.DestinationAddress())
 	if target == nil {
 		return nil, errors.New("invalid UDP destination")
@@ -117,7 +125,15 @@ func (p *multiProxy) Probe(ctx context.Context) error {
 			if err != nil {
 				return
 			}
-			_ = conn.Close()
+			tlsConn := tls.Client(conn, &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				ServerName: "cloudflare-dns.com",
+			})
+			if err = tlsConn.HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				return
+			}
+			_ = tlsConn.Close()
 			results <- result{index: index, ms: max(1, int(time.Since(started).Milliseconds()))}
 		}(i, endpoint)
 	}
