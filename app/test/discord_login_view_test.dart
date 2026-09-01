@@ -27,7 +27,7 @@ class FakeSessionService extends SessionService {
 void main() {
   testWidgets('legacy account fields are replaced by Discord login and free-trial status', (tester) async {
     final state = AppState(sessionService: FakeSessionService());
-    await state.init();
+    await state.init(checkForUpdates: false);
     await tester.pumpWidget(AuraApp(state: state));
 
     expect(find.text('CONTINUE WITH DISCORD'), findsOneWidget);
@@ -36,9 +36,6 @@ void main() {
 
     await tester.tap(find.text('CONTINUE WITH DISCORD'));
     await tester.pump();
-    // The production app starts background update checks; do not wait for
-    // the continuously animated desktop shell to settle in this test.
-    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('FREE TRIAL'), findsOneWidget);
     expect(find.textContaining('1 GB'), findsWidgets);
