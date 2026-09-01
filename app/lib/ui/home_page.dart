@@ -18,15 +18,8 @@ class HomePage extends StatelessWidget {
     final theme = Theme.of(context);
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment(-0.75, -1.0),
-            radius: 1.45,
-            colors: [Color(0x332D74FF), Color(0x1A8B5CF6), Color(0xFF070914)],
-            stops: [0, 0.42, 1],
-          ),
-        ),
+      body: ColoredBox(
+        color: theme.colorScheme.surface,
         child: SafeArea(
           child: ListenableBuilder(
             listenable: state,
@@ -109,13 +102,14 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.asset(
+              'assets/tray/tray.png',
+              width: 40,
+              height: 40,
+              fit: BoxFit.fill,
             ),
-            child: Icon(Icons.auto_awesome, color: theme.colorScheme.primary),
           ),
           const SizedBox(width: 10),
           Column(

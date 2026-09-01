@@ -124,23 +124,7 @@ class AuraApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final foruiTheme = FThemeData(
-      debugLabel: 'Aura Dark Desktop',
-      touch: false,
-      colors: FTheme.neutral.dark.desktop.colors.copyWith(
-        background: const Color(0xFF070914),
-        foreground: const Color(0xFFF4F1FF),
-        primary: const Color(0xFF9D8CFF),
-        primaryForeground: const Color(0xFF0B0D18),
-        secondary: const Color(0xFF191C2D),
-        secondaryForeground: const Color(0xFFF4F1FF),
-        muted: const Color(0xFF121522),
-        mutedForeground: const Color(0xFF9FA3B7),
-        card: const Color(0xFF111422),
-        border: const Color(0x2EFFFFFF),
-        error: const Color(0xFFFF8E91),
-      ),
-    );
+    final foruiTheme = FTheme.neutral.dark.desktop;
     final materialTheme = foruiTheme.toApproximateMaterialTheme();
     return MaterialApp(
       title: 'Aura',
@@ -150,12 +134,10 @@ class AuraApp extends StatelessWidget {
       supportedLocales: FLocalizations.supportedLocales,
       theme: materialTheme.copyWith(
         colorScheme: materialTheme.colorScheme.copyWith(
-          secondary: const Color(0xFF62E6FF),
-          onSecondary: const Color(0xFF070914),
-          tertiary: const Color(0xFFFFC56E),
-          onTertiary: const Color(0xFF070914),
+          tertiary: foruiTheme.colors.mutedForeground,
+          onTertiary: foruiTheme.colors.background,
         ),
-        scaffoldBackgroundColor: const Color(0xFF070914),
+        scaffoldBackgroundColor: foruiTheme.colors.background,
       ),
       builder: (context, child) => FTheme(
         data: foruiTheme,

@@ -118,10 +118,16 @@ class _LoginViewState extends State<LoginView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Icon(
-                    Icons.auto_awesome,
-                    size: 48,
-                    color: theme.colorScheme.primary,
+                  Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.asset(
+                        'assets/tray/tray.png',
+                        width: 64,
+                        height: 64,
+                        fit: BoxFit.fill,
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Text(
