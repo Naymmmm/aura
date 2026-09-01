@@ -34,9 +34,8 @@ void main() {
     expect(find.text('account id'), findsNothing);
     expect(find.text('api token'), findsNothing);
 
-    await tester.tap(find.text('CONTINUE WITH DISCORD'));
+    expect(await state.loginWithDiscord(), isTrue);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('FREE TRIAL'), findsOneWidget);
     expect(find.textContaining('1 GB'), findsWidgets);
