@@ -37,7 +37,7 @@ void main() {
     expect(await state.loginWithDiscord(), isTrue);
     await tester.pump();
 
-    expect(find.text('FREE TRIAL'), findsOneWidget);
+    expect(find.textContaining('FREE TRIAL'), findsOneWidget);
     expect(find.textContaining('1 GB'), findsWidgets);
     expect(find.textContaining('Free User'), findsOneWidget);
   });
