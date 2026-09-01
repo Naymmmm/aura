@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:forui/forui.dart';
 
 import '../state/app_state.dart';
 import 'aura_lines.dart';
@@ -20,7 +21,6 @@ class _LoginViewState extends State<LoginView> {
   final _idCtrl = TextEditingController();
   final _tokCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
-  bool _obscure = true;
   bool _remember = true;
   bool _busy = false;
   String? _errorLine;
@@ -146,32 +146,20 @@ class _LoginViewState extends State<LoginView> {
 
                   if (_signupMode) ...[
                     if (_signedUp == null) ...[
-                      TextField(
-                        controller: _nameCtrl,
+                      FTextField(
+                        control: FTextFieldControl.managed(
+                          controller: _nameCtrl,
+                        ),
                         enabled: !_signupBusy,
                         autocorrect: false,
-                        decoration: InputDecoration(
-                          labelText: 'your name (who is this account for?)',
-                          hintText: 'e.g. mateo',
-                          prefixIcon: const Icon(
-                            Icons.person_outline,
-                            size: 20,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        onSubmitted: (_) => _signup(),
+                        label: const Text('your name (who is this for?)'),
+                        hint: 'e.g. mateo',
+                        onSubmit: (_) => _signup(),
                       ),
                       const SizedBox(height: 14),
-                      FilledButton(
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(double.infinity, 52),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                        onPressed: _signupBusy ? null : _signup,
+                      FButton(
+                        size: FButtonSizeVariant.lg,
+                        onPress: _signupBusy ? null : _signup,
                         child: _signupBusy
                             ? const SizedBox(
                                 width: 20,
@@ -198,11 +186,7 @@ class _LoginViewState extends State<LoginView> {
                       ),
                     ] else ...[
                       // token shown once — copy it before leaving this screen
-                      Card(
-                        color: theme.colorScheme.surfaceContainerHigh,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
+                      FCard(
                         child: Padding(
                           padding: const EdgeInsets.all(16),
                           child: Column(
@@ -236,8 +220,9 @@ class _LoginViewState extends State<LoginView> {
                       ),
                       const SizedBox(height: 14),
                     ],
-                    TextButton(
-                      onPressed: _signupBusy
+                    FButton(
+                      variant: FButtonVariant.ghost,
+                      onPress: _signupBusy
                           ? null
                           : () => setState(() {
                               _signupMode = false;
@@ -246,70 +231,33 @@ class _LoginViewState extends State<LoginView> {
                       child: const Text('back to login'),
                     ),
                   ] else ...[
-                    TextField(
-                      controller: _idCtrl,
+                    FTextField(
+                      control: FTextFieldControl.managed(controller: _idCtrl),
                       autofocus: true,
                       enabled: !_busy,
                       autocorrect: false,
-                      decoration: InputDecoration(
-                        labelText: 'account id',
-                        hintText: 'e.g. testme01',
-                        prefixIcon: const Icon(Icons.badge_outlined, size: 20),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      onSubmitted: (_) => _submit(),
+                      label: const Text('account id'),
+                      hint: 'e.g. testme01',
+                      onSubmit: (_) => _submit(),
                     ),
                     const SizedBox(height: 14),
-                    TextField(
-                      controller: _tokCtrl,
+                    FTextField.password(
+                      control: FTextFieldControl.managed(controller: _tokCtrl),
                       enabled: !_busy,
-                      autocorrect: false,
-                      obscureText: _obscure,
-                      enableSuggestions: false,
-                      decoration: InputDecoration(
-                        labelText: 'api token',
-                        prefixIcon: const Icon(Icons.key_outlined, size: 20),
-                        suffixIcon: IconButton(
-                          tooltip: _obscure ? 'show token' : 'hide token',
-                          icon: Icon(
-                            _obscure ? Icons.visibility_off : Icons.visibility,
-                            size: 20,
-                          ),
-                          onPressed: () => setState(() => _obscure = !_obscure),
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      onSubmitted: (_) => _submit(),
+                      label: const Text('api token'),
+                      onSubmit: (_) => _submit(),
                     ),
                     const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Checkbox(
-                          value: _remember,
-                          onChanged: _busy
-                              ? null
-                              : (v) => setState(() => _remember = v ?? true),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          'remember me on this machine',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ],
+                    FCheckbox(
+                      value: _remember,
+                      enabled: !_busy,
+                      onChange: (value) => setState(() => _remember = value),
+                      label: const Text('remember me on this machine'),
                     ),
                     const SizedBox(height: 14),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 52),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                      ),
-                      onPressed: _busy ? null : _submit,
+                    FButton(
+                      size: FButtonSizeVariant.lg,
+                      onPress: _busy ? null : _submit,
                       child: _busy
                           ? const SizedBox(
                               width: 20,
@@ -332,8 +280,9 @@ class _LoginViewState extends State<LoginView> {
                         color: theme.colorScheme.error,
                       ),
                     ),
-                    TextButton(
-                      onPressed: _busy
+                    FButton(
+                      variant: FButtonVariant.ghost,
+                      onPress: _busy
                           ? null
                           : () => setState(() {
                               _signupMode = true;
@@ -403,10 +352,7 @@ class _RulesCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Card(
-      elevation: 0,
-      color: theme.colorScheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    return FCard(
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
