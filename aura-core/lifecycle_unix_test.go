@@ -53,7 +53,17 @@ func TestManagedProcessStopKillsProcessGroup(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 	wait.Wait()
-	if err := syscall.Kill(childPID, 0); err == nil || !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("child process %d survived process-group shutdown: %v", childPID, err)
+	// On macOS, the orphaned child can remain briefly as a zombie after the
+	// shell exits. Give launchd time to reap it before deciding it survived.
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		err := syscall.Kill(childPID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child process %d survived process-group shutdown: %v", childPID, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
