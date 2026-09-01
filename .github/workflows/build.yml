@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  SB_VERSION: 1.13.15
+  NAIVE_VERSION: 150.0.7871.63-1
   FLUTTER_VERSION: 3.44.9
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          Get-ChildItem infra -Filter *.ps1 | ForEach-Object {
+          @(Get-ChildItem infra -Filter *.ps1) + @(Get-ChildItem app/tool -Filter *.ps1) | ForEach-Object {
             $tokens = $null
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
@@ -49,31 +49,38 @@ jobs:
         shell: pwsh
         run: Copy-Item app/lib/secrets.example.dart app/lib/secrets.dart -Force
 
-      - name: Download sing-box (windows-amd64)
+      - name: Download NaiveProxy and Wintun (windows-amd64)
         shell: pwsh
         run: |
-          $work = "$env:RUNNER_TEMP\singbox"
-          $dir = "$work\engine"
+          $work = "$env:RUNNER_TEMP\naiveproxy"
+          $dir = "$work\bundle"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $zip = "$work\sb.zip"
-          Invoke-WebRequest "https://github.com/SagerNet/sing-box/releases/download/v$env:SB_VERSION/sing-box-$env:SB_VERSION-windows-amd64.zip" -OutFile $zip
+          $zip = "$work\naive.zip"
+          Invoke-WebRequest "https://github.com/klzgrad/naiveproxy/releases/download/v$env:NAIVE_VERSION/naiveproxy-v$env:NAIVE_VERSION-win-x64.zip" -OutFile $zip
           $extract = "$work\ex"
           Expand-Archive $zip $extract
           Get-ChildItem "$extract" -Directory | Select-Object -First 1 | ForEach-Object {
-            Get-ChildItem $_.FullName | Copy-Item -Destination $dir -Recurse -Force
+            Copy-Item "$($_.FullName)\naive.exe" "$dir\naive.exe" -Force
           }
-          if (-not (Test-Path "$dir\wintun.dll")) {
-            Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$work\wintun.zip"
-            Expand-Archive "$work\wintun.zip" "$work\w"
-            Copy-Item "$work\w\wintun\bin\amd64\wintun.dll" "$dir"
-          }
-          echo "SB_DIR=$dir" >> $env:GITHUB_ENV
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$work\wintun.zip"
+          Expand-Archive "$work\wintun.zip" "$work\w"
+          Copy-Item "$work\w\wintun\bin\amd64\wintun.dll" "$dir\wintun.dll" -Force
+          echo "NAIVE_DIR=$dir" >> $env:GITHUB_ENV
 
-      - name: Validate client tunnel config
+      - name: Test official NaiveProxy integration
         shell: pwsh
-        run: '& "$env:SB_DIR\sing-box.exe" check -c app/assets/singbox.template.json'
+        working-directory: aura-core
+        run: |
+          $env:AURA_NAIVE_PATH = "$env:NAIVE_DIR\naive.exe"
+          go test -run TestNaiveProxyMultiListenerIntegration -count=1 .
 
       - run: flutter pub get
+        working-directory: app
+
+      - run: flutter analyze
+        working-directory: app
+
+      - run: flutter test
         working-directory: app
 
       - run: flutter build windows --release
@@ -84,13 +91,15 @@ jobs:
         working-directory: aura-core
         run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o aura-core.exe .
 
-      - name: Bundle aura-core + Naive engine + zip
+      - name: Bundle Aura Core + NaiveProxy + Wintun + zip
         shell: pwsh
         run: |
           $rel = "app\build\windows\x64\runner\Release"
-          New-Item -ItemType Directory -Force -Path "$rel\aura-core\engine" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$rel\aura-core" | Out-Null
           Copy-Item "aura-core\aura-core.exe" "$rel\aura-core\aura-core.exe" -Force
-          Get-ChildItem "$env:SB_DIR" | Copy-Item -Destination "$rel\aura-core\engine" -Force
+          Copy-Item "$env:NAIVE_DIR\naive.exe" "$rel\aura-core\naive.exe" -Force
+          Copy-Item "$env:NAIVE_DIR\wintun.dll" "$rel\aura-core\wintun.dll" -Force
+          if (Get-ChildItem "$rel\aura-core" -Recurse | Where-Object Name -Match 'sing-box|singbox') { throw 'sing-box leaked into the 0.3.0 bundle' }
           Compress-Archive -Path "$rel\*" -DestinationPath aura-windows-amd64.zip
 
       - uses: actions/upload-artifact@v4
@@ -121,13 +130,23 @@ jobs:
       - name: Prepare secrets.dart from example
         run: cp app/lib/secrets.example.dart app/lib/secrets.dart
 
-      - name: Download sing-box (darwin-arm64)
+      - name: Download NaiveProxy (darwin-arm64)
         run: |
-          SB_DIR="$RUNNER_TEMP/singbox"; mkdir -p "$SB_DIR"
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-darwin-arm64.tar.gz" | tar -xz -C "$SB_DIR" --strip-components=1
-          echo "SB_DIR=$SB_DIR" >> "$GITHUB_ENV"
+          NAIVE_DIR="$RUNNER_TEMP/naiveproxy"; mkdir -p "$NAIVE_DIR"
+          curl -fsSL "https://github.com/klzgrad/naiveproxy/releases/download/v${NAIVE_VERSION}/naiveproxy-v${NAIVE_VERSION}-mac-arm64-arm64.tar.xz" | tar -xJ -C "$NAIVE_DIR" --strip-components=1
+          echo "NAIVE_DIR=$NAIVE_DIR" >> "$GITHUB_ENV"
+
+      - name: Test official NaiveProxy integration
+        working-directory: aura-core
+        run: AURA_NAIVE_PATH="$NAIVE_DIR/naive" go test -run TestNaiveProxyMultiListenerIntegration -count=1 .
 
       - run: flutter pub get
+        working-directory: app
+
+      - run: flutter analyze
+        working-directory: app
+
+      - run: flutter test
         working-directory: app
 
       - run: flutter build macos --release
@@ -137,12 +156,13 @@ jobs:
         working-directory: aura-core
         run: go build -trimpath -ldflags "-s -w" -o aura-core .
 
-      - name: Bundle aura-core + Naive engine + zip
+      - name: Bundle Aura Core + NaiveProxy + zip
         run: |
           APP="app/build/macos/Build/Products/Release/aura.app"
-          mkdir -p "$APP/Contents/MacOS/aura-core/engine"
+          mkdir -p "$APP/Contents/MacOS/aura-core"
           cp aura-core/aura-core "$APP/Contents/MacOS/aura-core/"
-          cp "$SB_DIR"/sing-box "$APP/Contents/MacOS/aura-core/engine/"
+          cp "$NAIVE_DIR"/naive "$APP/Contents/MacOS/aura-core/"
+          ! find "$APP" -iname '*sing-box*' -o -iname '*singbox*' | grep -q .
           codesign --force --deep --sign - "$APP"
           ditto -c -k --keepParent "$APP" aura-macos-arm64.zip
 

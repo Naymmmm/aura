@@ -13,9 +13,10 @@ import 'package:path_provider/path_provider.dart';
 class AuraCoreManager {
   AuraCoreManager._();
 
-  static const version = '0.2.6';
+  static const version = '0.3.0';
   static const _port = 45873;
   static String? _dir;
+  static String? _token;
 
   static Future<String> get dir async {
     if (_dir != null) return _dir!;
@@ -59,11 +60,43 @@ class AuraCoreManager {
   }
 
   static Future<bool> get isEngineRunning async {
-    if (!await _healthy()) return false;
-    final response = await _request('GET', '/v1/status');
-    if (response.statusCode != 200) return false;
-    final value = jsonDecode(response.body) as Map<String, dynamic>;
-    return value['running'] as bool? ?? false;
+    return (await status)?.running ?? false;
+  }
+
+  static Future<AuraCoreStats?> get stats async {
+    try {
+      final response = await _request(
+        'GET',
+        '/v1/stats',
+      ).timeout(const Duration(seconds: 3));
+      if (response.statusCode != 200) return null;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final rawLatencies = body['latencies'] as Map<String, dynamic>? ?? {};
+      return AuraCoreStats(
+        running: body['running'] as bool? ?? false,
+        activeServer: body['active_server'] as String?,
+        latencies: rawLatencies.map(
+          (key, value) => MapEntry(key, (value as num).toInt()),
+        ),
+        uploadTotal: (body['upload_total'] as num?)?.toInt() ?? 0,
+        downloadTotal: (body['download_total'] as num?)?.toInt() ?? 0,
+        lastError: body['last_error'] as String?,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<String?> waitForActive(Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final value = await stats;
+      if (value?.running == true && value!.activeServer?.isNotEmpty == true) {
+        return value.activeServer;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    return null;
   }
 
   static Future<void> _ensureReady() async {
@@ -94,9 +127,12 @@ class AuraCoreManager {
 
   static Future<void> _ensureToken(String d) async {
     final file = File(_p(d, 'api.token'));
-    if (await file.exists() &&
-        (await file.readAsString()).trim().length >= 32) {
-      return;
+    if (await file.exists()) {
+      final existing = (await file.readAsString()).trim();
+      if (existing.length >= 32) {
+        _token = existing;
+        return;
+      }
     }
     final random = Random.secure();
     final token = List.generate(
@@ -104,32 +140,33 @@ class AuraCoreManager {
       (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
     ).join();
     await file.writeAsString(token, flush: true);
+    _token = token;
     if (Platform.isMacOS) await Process.run('chmod', ['600', file.path]);
   }
 
   static Future<bool> _healthy() async {
-    try {
-      final response = await _request(
-        'GET',
-        '/v1/status',
-      ).timeout(const Duration(milliseconds: 900));
-      return response.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+    return await status != null;
   }
 
   static Future<bool> _compatible() async {
+    return (await status)?.version == version;
+  }
+
+  static Future<AuraCoreStatus?> get status async {
     try {
       final response = await _request(
         'GET',
         '/v1/status',
       ).timeout(const Duration(milliseconds: 900));
-      if (response.statusCode != 200) return false;
+      if (response.statusCode != 200) return null;
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      return body['version'] == version;
+      return AuraCoreStatus(
+        version: body['version'] as String? ?? '',
+        running: body['running'] as bool? ?? false,
+        lastError: body['last_error'] as String?,
+      );
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
@@ -139,7 +176,9 @@ class AuraCoreManager {
     String? body,
   }) async {
     final d = await dir;
-    final token = (await File(_p(d, 'api.token')).readAsString()).trim();
+    final token = _token ??= (await File(
+      _p(d, 'api.token'),
+    ).readAsString()).trim();
     final request = http.Request(
       method,
       Uri.parse('http://127.0.0.1:$_port$path'),
@@ -149,8 +188,15 @@ class AuraCoreManager {
       request.headers['Content-Type'] = 'application/json';
       request.body = body;
     }
-    final streamed = await request.send().timeout(const Duration(seconds: 8));
-    return http.Response.fromStream(streamed);
+    final client = http.Client();
+    try {
+      final streamed = await client
+          .send(request)
+          .timeout(const Duration(seconds: 8));
+      return await http.Response.fromStream(streamed);
+    } finally {
+      client.close();
+    }
   }
 
   static Future<void> _install(String stateDir) async {
@@ -252,8 +298,8 @@ $exe = Join-Path $install 'aura-core.exe'
 $token = Join-Path $state 'api.token'
 $arguments = 'serve --state-dir "' + $runtime + '" --token-file "' + $token + '"'
 $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments
-$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Highest
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+$trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
@@ -279,7 +325,7 @@ mkdir -p "$RUNTIME"
 chown root:wheel "$RUNTIME"
 chmod 700 "$RUNTIME"
 cp -R "$SOURCE"/. "$INSTALL"/
-chmod 755 "$INSTALL/aura-core" "$INSTALL/engine/sing-box"
+chmod 755 "$INSTALL/aura-core" "$INSTALL/naive"
 chown -R root:wheel "$INSTALL"
 xattr -dr com.apple.quarantine "$INSTALL" 2>/dev/null || true
 cat > "$PLIST" <<'AURA_PLIST'
@@ -325,4 +371,34 @@ launchctl bootstrap system "$PLIST"
       .replaceAll("'", '&apos;');
   static String _appleScriptQuote(String value) =>
       value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+class AuraCoreStatus {
+  const AuraCoreStatus({
+    required this.version,
+    required this.running,
+    this.lastError,
+  });
+
+  final String version;
+  final bool running;
+  final String? lastError;
+}
+
+class AuraCoreStats {
+  const AuraCoreStats({
+    required this.running,
+    required this.activeServer,
+    required this.latencies,
+    required this.uploadTotal,
+    required this.downloadTotal,
+    this.lastError,
+  });
+
+  final bool running;
+  final String? activeServer;
+  final Map<String, int> latencies;
+  final int uploadTotal;
+  final int downloadTotal;
+  final String? lastError;
 }

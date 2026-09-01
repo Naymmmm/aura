@@ -3,41 +3,57 @@
 package main
 
 import (
+	"errors"
 	"os"
-	"path/filepath"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
 
-func TestCoreLifecycleStopsChild(t *testing.T) {
+func TestManagedProcessStopKillsProcessGroup(t *testing.T) {
 	dir := t.TempDir()
-	engine := filepath.Join(dir, "fake-engine")
-	script := `#!/bin/sh
-if [ "$1" = check ]; then exit 0; fi
-trap 'exit 0' TERM INT
-while :; do sleep 1; done
-`
-	if err := os.WriteFile(engine, []byte(script), 0700); err != nil {
+	childFile := dir + "/child.pid"
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & echo $! > \"$1\"; wait", "sh", childFile)
+	configureChild(cmd)
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	c := &core{stateDir: dir, engine: engine}
-	if err := c.start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if !c.snapshot().Running {
-		t.Fatal("child did not enter running state")
-	}
-	if err := c.stop(); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	deadline := time.Now().Add(time.Second)
-	for c.snapshot().Running && time.Now().Before(deadline) {
+	process := &managedProcess{cmd: cmd, done: make(chan struct{})}
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		err := cmd.Wait()
+		process.mu.Lock()
+		process.err = err
+		process.mu.Unlock()
+		close(process.done)
+	}()
+
+	var childPID int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(childFile)
+		if err == nil {
+			childPID, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
+			if childPID > 0 {
+				break
+			}
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if c.snapshot().Running {
-		t.Fatal("child remained running after stop")
+	if childPID == 0 {
+		t.Fatal("child process did not start")
+	}
+	if err := process.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	wait.Wait()
+	if err := syscall.Kill(childPID, 0); err == nil || !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("child process %d survived process-group shutdown: %v", childPID, err)
 	}
 }

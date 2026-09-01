@@ -41,7 +41,8 @@ class SessionInfo {
 /// Account creds (account_id + token) live in session.json in the support dir;
 /// the Worker mints per-connection server creds from the pool.
 class SessionService {
-  SessionService({String? apiBase}) : _apiBase = apiBase ?? 'https://api.copal.run';
+  SessionService({String? apiBase})
+    : _apiBase = apiBase ?? 'https://api.copal.run';
 
   final String _apiBase;
 
@@ -79,14 +80,20 @@ class SessionService {
 
   /// POST /v1/session — check out fresh pool creds for this account.
   /// Throws [SessionException] on auth/state failures.
-  Future<SessionInfo> openSession(String accountId, String token,
-      {bool remember = true}) async {
+  Future<SessionInfo> openSession(
+    String accountId,
+    String token, {
+    bool remember = true,
+  }) async {
     http.Response resp;
     try {
       resp = await http
           .post(
             Uri.parse('$_apiBase/v1/session'),
-            headers: {'content-type': 'application/json', 'accept': 'application/json'},
+            headers: {
+              'content-type': 'application/json',
+              'accept': 'application/json',
+            },
             body: jsonEncode({'account_id': accountId, 'token': token}),
           )
           .timeout(const Duration(seconds: 20));
@@ -98,10 +105,15 @@ class SessionService {
         final json = jsonDecode(resp.body) as Map<String, dynamic>;
         final sid = json['session_id'] as String;
         final cfg = ServerConfig.fromJson(json);
-        if (cfg.servers.isEmpty) throw SessionException(AuthErrorKind.poolExhausted);
+        if (cfg.servers.isEmpty) {
+          throw SessionException(AuthErrorKind.poolExhausted);
+        }
         if (remember) {
-          await _credsFile()
-              .then((f) => f.writeAsString(jsonEncode({'account_id': accountId, 'token': token})));
+          await _credsFile().then(
+            (f) => f.writeAsString(
+              jsonEncode({'account_id': accountId, 'token': token}),
+            ),
+          );
         } else {
           // not remembering: wipe anything saved, including an older login
           final f = await _credsFile();
@@ -110,17 +122,20 @@ class SessionService {
         return SessionInfo(
           config: cfg,
           sessionId: sid,
-          expiresAt:
-              DateTime.fromMillisecondsSinceEpoch((json['expires_at'] as num).toInt() * 1000),
+          expiresAt: DateTime.fromMillisecondsSinceEpoch(
+            (json['expires_at'] as num).toInt() * 1000,
+          ),
         );
       case 401:
         throw SessionException(AuthErrorKind.badCreds);
       case 403:
-        throw SessionException(resp.body.contains('no_credit')
-            ? AuthErrorKind.noCredit
-            : resp.body.contains('disabled')
-                ? AuthErrorKind.accountDisabled
-                : AuthErrorKind.accountExpired);
+        throw SessionException(
+          resp.body.contains('no_credit')
+              ? AuthErrorKind.noCredit
+              : resp.body.contains('disabled')
+              ? AuthErrorKind.accountDisabled
+              : AuthErrorKind.accountExpired,
+        );
       case 503:
         throw SessionException(AuthErrorKind.poolExhausted);
       default:
@@ -162,7 +177,10 @@ class SessionService {
       resp = await http
           .post(
             Uri.parse('$_apiBase/v1/signup'),
-            headers: {'content-type': 'application/json', 'accept': 'application/json'},
+            headers: {
+              'content-type': 'application/json',
+              'accept': 'application/json',
+            },
             body: jsonEncode({'name': name}),
           )
           .timeout(const Duration(seconds: 20));
@@ -173,7 +191,9 @@ class SessionService {
     final j = jsonDecode(resp.body) as Map<String, dynamic>;
     final id = j['account_id'] as String?;
     final token = j['token'] as String?;
-    if (id == null || token == null) throw SessionException(AuthErrorKind.network);
+    if (id == null || token == null) {
+      throw SessionException(AuthErrorKind.network);
+    }
     return (accountId: id, token: token);
   }
 

@@ -1,12 +1,10 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/server_info.dart';
-import '../services/clash_api.dart';
 import '../services/config_generator.dart';
 import '../services/session_service.dart';
 import '../services/aura_core_manager.dart';
@@ -28,7 +26,6 @@ class AppState extends ChangeNotifier {
     : _sessionService = sessionService ?? SessionService();
 
   final SessionService _sessionService;
-  final ClashApi _clash = ClashApi();
 
   // ---- auto-update state (checked on launch, downloaded on demand) ----
   String? _updateVersion; // non-null = newer release available
@@ -75,6 +72,7 @@ class AppState extends ChangeNotifier {
   int _prevUp = 0;
   int _prevDown = 0;
   int _coreMisses = 0;
+  bool _statsPollInFlight = false;
 
   /// Bytes used this calendar month (persisted across sessions).
   int get monthUsed => _monthUsed;
@@ -90,7 +88,6 @@ class AppState extends ChangeNotifier {
   bool get overBudget => _budgetBytes > 0 && _monthUsed >= _budgetBytes;
 
   Timer? _statsTimer;
-  String? _clashSecret;
   bool _shutdownRequested = false;
   Completer<void>? _connectDone;
 
@@ -118,6 +115,19 @@ class AppState extends ChangeNotifier {
       _log('welcome back — account found on disk');
     } else {
       setPhase(VpnPhase.loggedOut);
+    }
+    // A previous hard crash can leave the privileged engine alive. We cannot
+    // safely claim it as this process's connection, so reconcile reality by
+    // stopping it before showing a disconnected state.
+    if (await AuraCoreManager.isEngineRunning) {
+      try {
+        await AuraCoreManager.stop(configDir: await AuraCoreManager.dir);
+        _log('cleaned up a tunnel left behind by an earlier app exit');
+      } catch (e) {
+        _statusLine =
+            'a tunnel is still running but Aura could not stop it: $e';
+        setPhase(VpnPhase.error);
+      }
     }
     unawaited(checkForUpdate()); // silent; never blocks startup
   }
@@ -264,21 +274,17 @@ class AppState extends ChangeNotifier {
       }
       final dir = await AuraCoreManager.dir;
       await Directory(dir).create(recursive: true);
-      _clashSecret = _randomSecret();
-      await ConfigGenerator.generate(
-        serverConfig: cfg,
-        singBoxDir: dir,
-        clashSecret: _clashSecret!,
-      );
+      await ConfigGenerator.generate(serverConfig: cfg, coreDir: dir);
       if (_shutdownRequested) return false;
-      _clash.setSecret(_clashSecret!);
       await AuraCoreManager.start(configDir: dir);
       if (_shutdownRequested) {
         await AuraCoreManager.stop(configDir: dir);
         return false;
       }
 
-      final active = await _clash.waitForActive(const Duration(seconds: 20));
+      final active = await AuraCoreManager.waitForActive(
+        const Duration(seconds: 20),
+      );
       if (active == null) {
         // Verbose failure: surface what the core actually wrote.
         final log = await AuraCoreManager.recentLog(dir);
@@ -309,6 +315,17 @@ class AppState extends ChangeNotifier {
       }
       return false;
     } catch (e) {
+      // Never show "disconnected" while the privileged helper says the
+      // engine is still carrying traffic. Live telemetry may fail without the
+      // tunnel itself having failed.
+      if (await AuraCoreManager.isEngineRunning) {
+        _statusLine = 'tunnel connected — live status is recovering';
+        _log('status warning: $e');
+        setPhase(VpnPhase.connected);
+        _startHeartbeat();
+        _startStatsPolling();
+        return true;
+      }
       try {
         final dir = await AuraCoreManager.dir;
         await AuraCoreManager.stop(configDir: dir);
@@ -430,22 +447,39 @@ class AppState extends ChangeNotifier {
     _prevDown = 0;
     _pollTick = 0;
     _coreMisses = 0;
-    _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      if (_phase != VpnPhase.connected) return;
-      final tags = _session?.config.servers.map((s) => s.tag).toList() ?? [];
-      final active = await _clash.activeServer();
-      if (active == null) {
+    _statsPollInFlight = false;
+    _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      unawaited(_pollStats());
+    });
+    unawaited(_pollStats());
+  }
+
+  Future<void> _pollStats() async {
+    if (_statsPollInFlight || _phase != VpnPhase.connected) return;
+    _statsPollInFlight = true;
+    try {
+      final stats = await AuraCoreManager.stats;
+      final active = stats?.activeServer;
+      if (stats == null || !stats.running) {
         _coreMisses++;
-        if (_coreMisses >= 3 && !await AuraCoreManager.isEngineRunning) {
-          _statsTimer?.cancel();
+        if (_coreMisses >= 3) {
+          if (!await AuraCoreManager.isEngineRunning) {
+            _statsTimer?.cancel();
+            _statusLine =
+                'the tunnel engine stopped unexpectedly — tap connect to repair';
+            _log('aura-core reports that the tunnel engine exited');
+            setPhase(VpnPhase.error);
+            return;
+          }
           _statusLine =
-              'the tunnel engine stopped unexpectedly — tap connect to repair';
-          _log('aura-core reports that the tunnel engine exited');
-          setPhase(VpnPhase.error);
-          return;
+              'tunnel connected — live status temporarily unavailable';
         }
       } else {
         _coreMisses = 0;
+        if (_statusLine?.startsWith('tunnel connected — live status') ??
+            false) {
+          _statusLine = null;
+        }
       }
       if (active != null && active != _activeServer) {
         final prev = _activeServer;
@@ -454,13 +488,14 @@ class AppState extends ChangeNotifier {
       }
       _latencies
         ..clear()
-        ..addAll(await _clash.latencies(tags));
-      final (up, down) = await _clash.traffic();
+        ..addAll(stats?.latencies ?? const {});
+      final up = stats?.uploadTotal ?? _upBytes;
+      final down = stats?.downloadTotal ?? _downBytes;
       _upBytes = up;
       _downBytes = down;
 
-      // Budget accounting: /traffic is cumulative since the engine starts,
-      // so the delta vs last poll is what actually flowed through the tunnel.
+      // Aura Core totals are cumulative since the engine starts, so the delta
+      // from the previous poll is what actually flowed through the tunnel.
       final total = up + down;
       final prev = _prevUp + _prevDown;
       _prevUp = up;
@@ -485,14 +520,8 @@ class AppState extends ChangeNotifier {
       }
 
       notifyListeners();
-    });
-  }
-
-  static String _randomSecret() {
-    final rnd = Random.secure();
-    return List.generate(
-      16,
-      (_) => rnd.nextInt(256).toRadixString(16).padLeft(2, '0'),
-    ).join();
+    } finally {
+      _statsPollInFlight = false;
+    }
   }
 }

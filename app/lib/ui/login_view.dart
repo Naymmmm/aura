@@ -88,17 +88,21 @@ class _LoginViewState extends State<LoginView> {
         _tokCtrl.text = creds.token;
       } else {
         final err = AuraLines.authError(widget.state.authError);
-        _signupErr = err.isEmpty ? 'signup failed — check your connection' : err;
+        _signupErr = err.isEmpty
+            ? 'signup failed — check your connection'
+            : err;
       }
     });
   }
 
   void _copyToClipboard(String text, String what) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('$what copied'),
-      duration: const Duration(seconds: 2),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$what copied'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   @override
@@ -114,20 +118,29 @@ class _LoginViewState extends State<LoginView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Icon(Icons.auto_awesome, size: 48, color: theme.colorScheme.primary),
+                  Icon(
+                    Icons.auto_awesome,
+                    size: 48,
+                    color: theme.colorScheme.primary,
+                  ),
                   const SizedBox(height: 12),
                   Text(
                     'AURA',
                     textAlign: TextAlign.center,
-                    style: theme.textTheme.headlineMedium
-                        ?.copyWith(fontWeight: FontWeight.w900, letterSpacing: 4),
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 4,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _signupMode ? 'create an account — the admin unlocks it' : 'log in to unlock the network with aura',
+                    _signupMode
+                        ? 'create an account — the admin unlocks it'
+                        : 'log in to unlock the network with aura',
                     textAlign: TextAlign.center,
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 28),
 
@@ -140,8 +153,13 @@ class _LoginViewState extends State<LoginView> {
                         decoration: InputDecoration(
                           labelText: 'your name (who is this account for?)',
                           hintText: 'e.g. mateo',
-                          prefixIcon: const Icon(Icons.person_outline, size: 20),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          prefixIcon: const Icon(
+                            Icons.person_outline,
+                            size: 20,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
                         onSubmitted: (_) => _signup(),
                       ),
@@ -150,50 +168,67 @@ class _LoginViewState extends State<LoginView> {
                         style: FilledButton.styleFrom(
                           minimumSize: const Size(double.infinity, 52),
                           shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14)),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
                         ),
                         onPressed: _signupBusy ? null : _signup,
                         child: _signupBusy
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
-                            : const Text('CREATE ACCOUNT',
+                            : const Text(
+                                'CREATE ACCOUNT',
                                 style: TextStyle(
-                                    fontWeight: FontWeight.w800, letterSpacing: 1.2)),
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
                       ),
                       const SizedBox(height: 10),
                       Text(
                         _signupErr ?? '',
                         textAlign: TextAlign.center,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: theme.colorScheme.error),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
                       ),
                     ] else ...[
                       // token shown once — copy it before leaving this screen
                       Card(
                         color: theme.colorScheme.surfaceContainerHigh,
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14)),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(16),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Text('account created — token shown ONCE',
-                                  textAlign: TextAlign.center,
-                                  style: theme.textTheme.titleSmall
-                                      ?.copyWith(fontWeight: FontWeight.w800)),
+                              Text(
+                                'account created — token shown ONCE',
+                                textAlign: TextAlign.center,
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
                               const SizedBox(height: 12),
-                              _credRow(theme, 'account id', _signedUp!.accountId),
+                              _credRow(
+                                theme,
+                                'account id',
+                                _signedUp!.accountId,
+                              ),
                               const SizedBox(height: 8),
                               _credRow(theme, 'api token', _signedUp!.token),
                               const SizedBox(height: 12),
                               Text(
                                 'this account is dead until the admin adds credit (days) to it. log in below — you\'ll be told when it\'s live.',
-                                style: theme.textTheme.bodySmall
-                                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
                               ),
                             ],
                           ),
@@ -205,9 +240,9 @@ class _LoginViewState extends State<LoginView> {
                       onPressed: _signupBusy
                           ? null
                           : () => setState(() {
-                                _signupMode = false;
-                                _signupErr = null;
-                              }),
+                              _signupMode = false;
+                              _signupErr = null;
+                            }),
                       child: const Text('back to login'),
                     ),
                   ] else ...[
@@ -220,7 +255,9 @@ class _LoginViewState extends State<LoginView> {
                         labelText: 'account id',
                         hintText: 'e.g. testme01',
                         prefixIcon: const Icon(Icons.badge_outlined, size: 20),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
                       onSubmitted: (_) => _submit(),
                     ),
@@ -236,11 +273,15 @@ class _LoginViewState extends State<LoginView> {
                         prefixIcon: const Icon(Icons.key_outlined, size: 20),
                         suffixIcon: IconButton(
                           tooltip: _obscure ? 'show token' : 'hide token',
-                          icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility,
-                              size: 20),
+                          icon: Icon(
+                            _obscure ? Icons.visibility_off : Icons.visibility,
+                            size: 20,
+                          ),
                           onPressed: () => setState(() => _obscure = !_obscure),
                         ),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
                       onSubmitted: (_) => _submit(),
                     ),
@@ -249,11 +290,15 @@ class _LoginViewState extends State<LoginView> {
                       children: [
                         Checkbox(
                           value: _remember,
-                          onChanged: _busy ? null : (v) => setState(() => _remember = v ?? true),
+                          onChanged: _busy
+                              ? null
+                              : (v) => setState(() => _remember = v ?? true),
                         ),
                         const SizedBox(width: 4),
-                        Text('remember me on this machine',
-                            style: theme.textTheme.bodySmall),
+                        Text(
+                          'remember me on this machine',
+                          style: theme.textTheme.bodySmall,
+                        ),
                       ],
                     ),
                     const SizedBox(height: 14),
@@ -261,7 +306,8 @@ class _LoginViewState extends State<LoginView> {
                       style: FilledButton.styleFrom(
                         minimumSize: const Size(double.infinity, 52),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14)),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
                       ),
                       onPressed: _busy ? null : _submit,
                       child: _busy
@@ -270,25 +316,30 @@ class _LoginViewState extends State<LoginView> {
                               height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('ASCEND',
+                          : const Text(
+                              'ASCEND',
                               style: TextStyle(
-                                  fontWeight: FontWeight.w800, letterSpacing: 1.2)),
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
                     ),
                     const SizedBox(height: 16),
                     Text(
                       _errorLine ?? '',
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: theme.colorScheme.error),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
                     ),
                     TextButton(
                       onPressed: _busy
                           ? null
                           : () => setState(() {
-                                _signupMode = true;
-                                _signedUp = null;
-                                _signupErr = null;
-                              }),
+                              _signupMode = true;
+                              _signedUp = null;
+                              _signupErr = null;
+                            }),
                       child: const Text('no account yet? create one'),
                     ),
                   ],
@@ -318,12 +369,19 @@ class _LoginViewState extends State<LoginView> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: theme.textTheme.labelSmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                Text(value,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.w600)),
+                Text(
+                  label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  value,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ],
             ),
           ),
@@ -354,15 +412,21 @@ class _RulesCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('THE RULES',
-                style: theme.textTheme.labelSmall
-                    ?.copyWith(letterSpacing: 2, fontWeight: FontWeight.w800)),
+            Text(
+              'THE RULES',
+              style: theme.textTheme.labelSmall?.copyWith(
+                letterSpacing: 2,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
             const SizedBox(height: 8),
             for (var i = 0; i < AuraLines.rules.length; i++)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text('${i + 1}. ${AuraLines.rules[i]}',
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  '${i + 1}. ${AuraLines.rules[i]}',
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
           ],
         ),

@@ -10,7 +10,6 @@ DPI-resistant VPN on Oracle Cloud Always Free + a Flutter desktop app with aura.
 
 ```
 infra/          PowerShell provisioning (OCI + Cloudflare + server bootstrap)
-config/         sing-box client template
 worker/         Cloudflare Worker (config API)
 app/            Flutter desktop app
 aura-core/      authenticated helper/service and tunnel-engine boundary
@@ -33,8 +32,8 @@ infra/07-EnableUdpOverTcp.ps1  migrate servers to sing-box Naive for encrypted U
 
 Aura login (account id + token) → `POST api.copal.run/v1/session` (checks out rotating
 server creds) → generate the Naive + UoT config → send it to `aura-core` over an
-authenticated loopback API → the already-privileged helper validates and starts
-the private engine → live latency/traffic via the Clash API.
+authenticated loopback API → the already-privileged helper starts NaiveProxy
+and its embedded TUN/UoT v2 stack → live latency/traffic via Aura Core's API.
 
 The helper needs one administrator approval when first installed (and when the
 helper itself is upgraded), not on every connection. Closing Aura stops the

@@ -12,8 +12,8 @@ import '../models/server_info.dart';
 /// still works when the Worker is unreachable. Manual refresh bypasses TTL.
 class ConfigService {
   ConfigService({String? apiBase, String? secret})
-      : _apiBase = apiBase ?? 'https://api.copal.run',
-        _secret = secret ?? '';
+    : _apiBase = apiBase ?? 'https://api.copal.run',
+      _secret = secret ?? '';
 
   final String _apiBase;
   final String _secret;
@@ -33,7 +33,10 @@ class ConfigService {
   Future<ServerConfig> _fetch() async {
     final uri = Uri.parse('$_apiBase/v1/config');
     final resp = await http
-        .get(uri, headers: {'x-copal-secret': _secret, 'accept': 'application/json'})
+        .get(
+          uri,
+          headers: {'x-copal-secret': _secret, 'accept': 'application/json'},
+        )
         .timeout(const Duration(seconds: 15));
     if (resp.statusCode != 200) {
       throw HttpException('Worker returned ${resp.statusCode}');
@@ -49,7 +52,8 @@ class ConfigService {
 
   /// Get config: cache if fresh, else network, else stale cache, else throw.
   Future<ServerConfig> getConfig({bool forceRefresh = false}) async {
-    final fresh = _cached != null &&
+    final fresh =
+        _cached != null &&
         _fetchedAt != null &&
         !forceRefresh &&
         DateTime.now().difference(_fetchedAt!) < _ttl;

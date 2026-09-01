@@ -1,4 +1,4 @@
-# Aura desktop 0.2.6
+# Aura desktop 0.3.0
 
 Flutter desktop UI for Aura on Windows and macOS.
 
@@ -11,7 +11,6 @@ Release bundles place the helper beside the executable:
 ```
 aura-core/
   aura-core[.exe]
-  engine/
-    sing-box[.exe]
-    libcronet.dll   # Windows
+  naive[.exe]
+  wintun.dll        # Windows
 ```

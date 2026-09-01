@@ -12,13 +12,18 @@ class LogsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('logs — no cap detected'), backgroundColor: theme.colorScheme.surface),
+      appBar: AppBar(
+        title: const Text('logs — no cap detected'),
+        backgroundColor: theme.colorScheme.surface,
+      ),
       body: ListenableBuilder(
         listenable: state,
         builder: (context, _) {
           final logs = state.logs;
           if (logs.isEmpty) {
-            return const Center(child: Text('nothing logged yet. silence is aura'));
+            return const Center(
+              child: Text('nothing logged yet. silence is aura'),
+            );
           }
           return ListView.builder(
             padding: const EdgeInsets.all(16),

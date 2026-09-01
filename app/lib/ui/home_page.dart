@@ -129,7 +129,7 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                'PRIVATE NETWORK  /  0.2.6',
+                'PRIVATE NETWORK  /  0.3.0',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.secondary,
                   letterSpacing: 1.1,

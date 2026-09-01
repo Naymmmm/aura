@@ -35,7 +35,9 @@ class ServerTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: tileColor,
         borderRadius: BorderRadius.circular(12),
-        border: isActive ? Border.all(color: theme.colorScheme.primary, width: 1.5) : null,
+        border: isActive
+            ? Border.all(color: theme.colorScheme.primary, width: 1.5)
+            : null,
       ),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
@@ -43,7 +45,11 @@ class ServerTile extends StatelessWidget {
           CircleAvatar(
             radius: 16,
             backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.15),
-            child: Icon(Icons.shield_outlined, size: 18, color: theme.colorScheme.primary),
+            child: Icon(
+              Icons.shield_outlined,
+              size: 18,
+              color: theme.colorScheme.primary,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -56,7 +62,10 @@ class ServerTile extends StatelessWidget {
                     if (isActive) ...[
                       const SizedBox(width: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 1,
+                        ),
                         decoration: BoxDecoration(
                           color: theme.colorScheme.primary,
                           borderRadius: BorderRadius.circular(6),
@@ -105,15 +114,17 @@ class _LatencyChip extends StatelessWidget {
     if (l == null) {
       return Text(
         '---',
-        style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       );
     }
 
     final color = l < 120
         ? Colors.greenAccent
         : l < 250
-            ? Colors.amberAccent
-            : Colors.redAccent;
+        ? Colors.amberAccent
+        : Colors.redAccent;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -121,7 +132,10 @@ class _LatencyChip extends StatelessWidget {
         const SizedBox(width: 2),
         Text(
           '${l}ms',
-          style: theme.textTheme.bodyMedium?.copyWith(color: color, fontWeight: FontWeight.w700),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: color,
+            fontWeight: FontWeight.w700,
+          ),
         ),
       ],
     );

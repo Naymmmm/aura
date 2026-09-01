@@ -17,7 +17,7 @@ class UpdateService {
   final String _apiBase;
 
   /// The version this build ships with (bump per release).
-  static const appVersion = 'v0.2.6';
+  static const appVersion = 'v0.3.0';
 
   /// Which release key this platform downloads.
   static String platformKey() => Platform.isMacOS ? 'latest-macos' : 'latest';

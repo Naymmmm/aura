@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -22,16 +21,15 @@ import (
 )
 
 const (
-	version       = "0.2.6"
+	version       = "0.3.0"
 	defaultListen = "127.0.0.1:45873"
 )
 
 type core struct {
 	mu        sync.Mutex
 	stateDir  string
-	engine    string
-	cmd       *exec.Cmd
-	startedAt time.Time
+	naivePath string
+	runtime   *vpnRuntime
 	lastError string
 }
 
@@ -49,14 +47,14 @@ type startRequest struct {
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintf(os.Stderr, "usage: aura-core serve [options]\n")
+		fmt.Fprintln(os.Stderr, "usage: aura-core serve [options]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	listen := fs.String("listen", defaultListen, "loopback API address")
-	stateDir := fs.String("state-dir", "", "Aura core state directory")
+	stateDir := fs.String("state-dir", "", "Aura Core state directory")
 	tokenFile := fs.String("token-file", "", "file containing API bearer token")
-	engine := fs.String("engine", "", "Naive/UoT engine executable")
+	naivePath := fs.String("naive", "", "NaiveProxy executable")
 	_ = fs.Parse(os.Args[2:])
 
 	if *stateDir == "" || *tokenFile == "" {
@@ -76,17 +74,18 @@ func main() {
 		log.Fatalf("read token: %v", err)
 	}
 	token := strings.TrimSpace(string(tokenBytes))
-	if *engine == "" {
-		name := "sing-box"
+	if *naivePath == "" {
+		name := "naive"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
-		*engine = filepath.Join(filepath.Dir(mustExecutable()), "engine", name)
+		*naivePath = filepath.Join(filepath.Dir(mustExecutable()), name)
 	}
 
-	c := &core{stateDir: *stateDir, engine: *engine}
+	c := &core{stateDir: *stateDir, naivePath: *naivePath}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", c.statusHandler)
+	mux.HandleFunc("GET /v1/stats", c.statsHandler)
 	mux.HandleFunc("POST /v1/start", c.startHandler)
 	mux.HandleFunc("POST /v1/stop", c.stopHandler)
 	mux.HandleFunc("GET /v1/log", c.logHandler)
@@ -94,8 +93,8 @@ func main() {
 		Addr:              *listen,
 		Handler:           authenticate(token, mux),
 		ReadHeaderTimeout: 3 * time.Second,
-		ReadTimeout:       5 * time.Second,
-		WriteTimeout:      5 * time.Second,
+		ReadTimeout:       8 * time.Second,
+		WriteTimeout:      8 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 	ln, err := net.Listen("tcp", *listen)
@@ -108,7 +107,7 @@ func main() {
 	defer cancel()
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, done := context.WithTimeout(context.Background(), 8*time.Second)
 		defer done()
 		_ = server.Shutdown(shutdownCtx)
 		_ = c.stop()
@@ -133,16 +132,35 @@ func (c *core) snapshot() status {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := status{Version: version, LastError: c.lastError}
-	if c.cmd != nil && c.cmd.Process != nil {
-		s.Running = true
-		s.PID = c.cmd.Process.Pid
-		s.StartedAt = c.startedAt.UTC().Format(time.RFC3339)
+	if c.runtime != nil {
+		s.Running = c.runtime.Running()
+		s.PID = c.runtime.PID()
+		s.StartedAt = c.runtime.startedAt.UTC().Format(time.RFC3339)
+		if errText := c.runtime.LastError(); errText != "" {
+			s.LastError = errText
+		}
 	}
 	return s
 }
 
 func (c *core) statusHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, c.snapshot())
+}
+
+func (c *core) statsHandler(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	rt := c.runtime
+	lastError := c.lastError
+	c.mu.Unlock()
+	if rt == nil {
+		writeJSON(w, http.StatusOK, runtimeStats{LastError: lastError})
+		return
+	}
+	stats := rt.Stats()
+	if stats.LastError == "" {
+		stats.LastError = lastError
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (c *core) startHandler(w http.ResponseWriter, r *http.Request) {
@@ -152,98 +170,39 @@ func (c *core) startHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid start request"})
 		return
 	}
-	if err := validateConfig(request.Config); err != nil {
+	cfg, err := parseConfig(request.Config)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	config := filepath.Join(c.stateDir, "config.json")
-	if err := os.WriteFile(config, request.Config, 0600); err != nil {
+	configPath := filepath.Join(c.stateDir, "config.json")
+	if err := os.WriteFile(configPath, request.Config, 0600); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := c.start(); err != nil {
+	if err := c.start(cfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, c.snapshot())
 }
 
-// validateConfig keeps the privileged boundary narrow. Aura accepts only the
-// client building blocks it generates; file-loading and server/listener
-// features are deliberately unavailable through the helper API.
-func validateConfig(raw json.RawMessage) error {
-	var cfg map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &cfg) != nil {
-		return errors.New("config must be a JSON object")
+func (c *core) start(cfg auraConfig) error {
+	if err := c.stop(); err != nil {
+		return fmt.Errorf("stop previous tunnel: %w", err)
 	}
-	allowedTop := map[string]bool{
-		"log": true, "dns": true, "inbounds": true, "outbounds": true,
-		"route": true, "experimental": true,
+	rt, err := startVPN(c.stateDir, c.naivePath, cfg)
+	if err != nil {
+		c.mu.Lock()
+		c.lastError = err.Error()
+		c.mu.Unlock()
+		return err
 	}
-	for key := range cfg {
-		if !allowedTop[key] {
-			return fmt.Errorf("config field %q is not allowed", key)
-		}
-	}
-	logConfig, ok := cfg["log"].(map[string]any)
-	if !ok || logConfig["output"] != "sing-box.log" {
-		return errors.New("log output must be sing-box.log")
-	}
-	if err := validateTypedList(cfg["inbounds"], map[string]bool{"tun": true, "mixed": true}); err != nil {
-		return fmt.Errorf("inbounds: %w", err)
-	}
-	if err := validateTypedList(cfg["outbounds"], map[string]bool{
-		"naive": true, "urltest": true, "direct": true, "block": true,
-	}); err != nil {
-		return fmt.Errorf("outbounds: %w", err)
-	}
-	if containsUnsafePath(cfg, "") {
-		return errors.New("config contains a file path outside the managed runtime")
-	}
+	c.mu.Lock()
+	c.runtime = rt
+	c.lastError = ""
+	c.mu.Unlock()
 	return nil
-}
-
-func validateTypedList(value any, allowed map[string]bool) error {
-	items, ok := value.([]any)
-	if !ok || len(items) == 0 {
-		return errors.New("must be a non-empty array")
-	}
-	for _, item := range items {
-		object, ok := item.(map[string]any)
-		if !ok {
-			return errors.New("entries must be objects")
-		}
-		typ, _ := object["type"].(string)
-		if !allowed[typ] {
-			return fmt.Errorf("type %q is not allowed", typ)
-		}
-	}
-	return nil
-}
-
-func containsUnsafePath(value any, parent string) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, "path") || strings.Contains(lower, "directory") {
-				if parent == "cache_file" && key == "path" && child == "cache.db" {
-					continue
-				}
-				return true
-			}
-			if containsUnsafePath(child, key) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if containsUnsafePath(child, parent) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (c *core) stopHandler(w http.ResponseWriter, _ *http.Request) {
@@ -254,82 +213,26 @@ func (c *core) stopHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, c.snapshot())
 }
 
-func (c *core) start() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.cmd != nil {
-		return nil
-	}
-	config := filepath.Join(c.stateDir, "config.json")
-	if _, err := os.Stat(config); err != nil {
-		return fmt.Errorf("config unavailable: %w", err)
-	}
-	check := exec.Command(c.engine, "check", "-D", c.stateDir, "-c", config)
-	check.Dir = c.stateDir
-	if output, err := check.CombinedOutput(); err != nil {
-		c.lastError = strings.TrimSpace(string(output))
-		return fmt.Errorf("config check failed: %s", c.lastError)
-	}
-	logFile, err := os.OpenFile(filepath.Join(c.stateDir, "core.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(c.engine, "run", "-D", c.stateDir, "-c", config)
-	cmd.Dir = c.stateDir
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	configureChild(cmd)
-	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
-		c.lastError = err.Error()
-		return err
-	}
-	c.cmd = cmd
-	c.startedAt = time.Now()
-	c.lastError = ""
-	go c.wait(cmd, logFile)
-	return nil
-}
-
-func (c *core) wait(cmd *exec.Cmd, logFile *os.File) {
-	err := cmd.Wait()
-	_ = logFile.Close()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.cmd != cmd {
-		return
-	}
-	c.cmd = nil
-	if err != nil {
-		c.lastError = err.Error()
-	}
-}
-
 func (c *core) stop() error {
 	c.mu.Lock()
-	cmd := c.cmd
+	rt := c.runtime
+	c.runtime = nil
 	c.mu.Unlock()
-	if cmd == nil || cmd.Process == nil {
+	if rt == nil {
 		return nil
 	}
-	if err := terminateChild(cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := rt.Stop(); err != nil {
+		c.mu.Lock()
+		c.lastError = err.Error()
+		c.mu.Unlock()
 		return err
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		c.mu.Lock()
-		done := c.cmd == nil
-		c.mu.Unlock()
-		if done {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return cmd.Process.Kill()
+	return nil
 }
 
 func (c *core) logHandler(w http.ResponseWriter, _ *http.Request) {
 	var b []byte
-	for _, name := range []string{"helper.log", "core.log", "sing-box.log"} {
+	for _, name := range []string{"helper.log", "core.log", "naive.log"} {
 		part, err := os.ReadFile(filepath.Join(c.stateDir, name))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -340,7 +243,7 @@ func (c *core) logHandler(w http.ResponseWriter, _ *http.Request) {
 			b = append(b, part...)
 		}
 	}
-	const max = 16 * 1024
+	const max = 32 * 1024
 	if len(b) > max {
 		b = b[len(b)-max:]
 	}
