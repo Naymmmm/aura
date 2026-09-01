@@ -123,9 +123,9 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                'PRIVATE NETWORK  /  0.3.0',
+                '(v0.3.0 master)',
                 style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.secondary,
+                  color: theme.colorScheme.onSurfaceVariant,
                   letterSpacing: 1.1,
                   fontWeight: FontWeight.w700,
                 ),
