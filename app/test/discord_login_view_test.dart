@@ -36,6 +36,7 @@ void main() {
 
     await tester.tap(find.text('CONTINUE WITH DISCORD'));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('FREE TRIAL'), findsOneWidget);
     expect(find.textContaining('1 GB'), findsWidgets);
