@@ -62,6 +62,7 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
   const version = String(form.get('version') ?? '');
   const artifact = String(form.get('artifact') ?? '');
   const suppliedSha256 = String(form.get('sha256') ?? '').toLowerCase();
+  const promote = String(form.get('promote') ?? 'true') !== 'false';
   if (
     !(file instanceof File) ||
     file.size > 95 * 1024 * 1024 ||
@@ -110,11 +111,13 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
   });
   await updateArchiveIndex(env.RELEASES, manifest);
 
-  const canonical = canonicalKey(artifact);
-  await env.RELEASES.put(
-    `meta:${canonical}`,
-    JSON.stringify({ version, sha256, size: file.size, uploaded, target: archiveKey, artifact })
-  );
+  if (promote) {
+    const canonical = canonicalKey(artifact);
+    await env.RELEASES.put(
+      `meta:${canonical}`,
+      JSON.stringify({ version, sha256, size: file.size, uploaded, target: archiveKey, artifact })
+    );
+  }
   return json({ version, artifact, key: archiveKey, size: file.size, sha256 }, 200);
 }
 
@@ -291,10 +294,20 @@ async function updateArchiveIndex(bucket: R2Bucket, manifest: ArchiveManifest): 
   }
   const withoutCurrent = versions.filter((entry) => entry.version !== manifest.version);
   withoutCurrent.push({ version: manifest.version, uploaded: manifest.uploaded });
-  withoutCurrent.sort((a, b) => b.uploaded - a.uploaded);
+  withoutCurrent.sort((a, b) => compareVersionsDescending(a.version, b.version) || b.uploaded - a.uploaded);
   await bucket.put('archive/index.json', JSON.stringify({ versions: withoutCurrent.slice(0, 50) }), {
     httpMetadata: { contentType: 'application/json' },
   });
+}
+
+function compareVersionsDescending(a: string, b: string): number {
+  const aParts = a.replace(/^v/, '').split(/[.-]/).slice(0, 3).map(Number);
+  const bParts = b.replace(/^v/, '').split(/[.-]/).slice(0, 3).map(Number);
+  for (let i = 0; i < 3; i++) {
+    const difference = (bParts[i] || 0) - (aParts[i] || 0);
+    if (difference) return difference;
+  }
+  return b.localeCompare(a);
 }
 
 export async function serveDownloadPage(env: Env, canDownloadSource: boolean): Promise<Response> {

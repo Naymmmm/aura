@@ -191,6 +191,32 @@ describe('Discord-gated downloads', () => {
     });
   });
 
+  it('archives historical releases without promoting them over the current version', async () => {
+    await publishArtifact('v0.3.1', 'windows', 'current');
+
+    const historical = new FormData();
+    historical.set('version', 'v0.2.6');
+    historical.set('artifact', 'windows');
+    historical.set('promote', 'false');
+    historical.set('file', new File(['old'], 'old.zip', { type: 'application/zip' }));
+    const response = await worker.fetch(
+      request('/v1/releases/publish', {
+        method: 'POST',
+        headers: { authorization: 'Bearer test-release-upload-token' },
+        body: historical,
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await (await env.RELEASES.get('meta:latest'))!.json()).toMatchObject({ version: 'v0.3.1' });
+    const index = await (await env.RELEASES.get('archive/index.json'))!.json<{
+      versions: Array<{ version: string }>;
+    }>();
+    const versions = index.versions.map((entry) => entry.version);
+    expect(versions.indexOf('v0.3.1')).toBeLessThan(versions.indexOf('v0.2.6'));
+  });
+
   it('announces a completed release changelog through the Aura bot only once', async () => {
     const version = 'v0.7.0';
     await publishArtifact(version, 'windows', 'windows-v7');

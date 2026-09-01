@@ -25,6 +25,7 @@ jobs:
 
           upload_release() {
             local version="$1"
+            local promote="$2"
             local release_dir
             release_dir="$(mktemp -d)"
 
@@ -43,7 +44,8 @@ jobs:
               curl --fail-with-body --retry 5 --retry-all-errors \
                 -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
                 -F "version=${version}" -F "artifact=${artifact}" \
-                -F "sha256=${sha256}" -F "file=@${file};type=application/zip" \
+                -F "sha256=${sha256}" -F "promote=${promote}" \
+                -F "file=@${file};type=application/zip" \
                 https://api.copal.run/v1/releases/publish
             }
 
@@ -58,8 +60,8 @@ jobs:
             v0.1.0 v0.2.0 v0.2.1 v0.2.2 v0.2.3 \
             v0.2.4 v0.2.5 v0.2.6 v0.3.0
           do
-            upload_release "$version"
+            upload_release "$version" false
           done
 
           echo 'Upload v0.3.1 last to restore all canonical latest pointers'
-          upload_release v0.3.1
+          upload_release v0.3.1 true

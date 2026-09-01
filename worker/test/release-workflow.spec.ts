@@ -36,5 +36,7 @@ describe('release workflow', () => {
     expect(backfillWorkflow).toContain('Upload v0.3.1 last');
     expect(backfillWorkflow).toContain('sha256sum');
     expect(backfillWorkflow).toContain('-F "sha256=');
+    expect(backfillWorkflow).toContain('-F "promote=${promote}"');
+    expect(backfillWorkflow).toContain('upload_release "$version" false');
   });
 });
