@@ -2,6 +2,7 @@
 build/
 dist/
 *.log
+.worktrees/
 
 # secrets — NEVER commit
 secrets/*.local
