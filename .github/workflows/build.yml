@@ -80,7 +80,7 @@ jobs:
       - run: flutter analyze
         working-directory: app
 
-      - run: flutter test --concurrency=1 --reporter=expanded
+      - run: flutter test --concurrency=1 --reporter=expanded --timeout=30s
         working-directory: app
 
       - run: flutter build windows --release
@@ -146,7 +146,7 @@ jobs:
       - run: flutter analyze
         working-directory: app
 
-      - run: flutter test --concurrency=1 --reporter=expanded
+      - run: flutter test --concurrency=1 --reporter=expanded --timeout=30s
         working-directory: app
 
       - run: flutter build macos --release
