@@ -59,13 +59,6 @@ func (p *multiProxy) DialContext(ctx context.Context, metadata *M.Metadata) (net
 }
 
 func (p *multiProxy) DialUDP(metadata *M.Metadata) (net.PacketConn, error) {
-	// QUIC over UoT creates a reliable stream inside another reliable stream,
-	// and current sing-box Naive inbounds corrupt or stall larger QUIC flows.
-	// Failing UDP/443 makes browsers immediately fall back to HTTP/2 while all
-	// other UDP (DNS, STUN, games, calls) still uses native UoT v2.
-	if metadata.DstPort == 443 {
-		return nil, errors.New("QUIC disabled; use HTTP/2 over TCP")
-	}
 	target := socks5.ParseAddrString(metadata.DestinationAddress())
 	if target == nil {
 		return nil, errors.New("invalid UDP destination")

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Restored Chromium HTTP/3 and QUIC traffic over the encrypted UoT v2 tunnel
+  now that the pinned sing-box server includes the Naive padding fix.
+- Made Windows tunnel interface setup safe to repeat, preventing reconnects
+  from failing when the expected Aura addresses already exist.
+
 ## 0.3.0
 
 - Replaced the client-side sing-box engine with Aura Core's embedded TUN

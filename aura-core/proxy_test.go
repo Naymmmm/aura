@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"net"
@@ -12,7 +13,11 @@ import (
 	"github.com/xjasonlyu/tun2socks/v2/transport/socks5"
 )
 
-func TestUOTv2ThroughSOCKSConnect(t *testing.T) {
+func TestQUICDatagramThroughUOTv2(t *testing.T) {
+	// Chromium QUIC initial packets are typically close to the path MTU. Keep
+	// this regression payload large enough to catch the Naive padding/framing
+	// corruption that previously caused Chromium to close the connection.
+	expectedPayload := bytes.Repeat([]byte{0x42}, 1350)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +64,7 @@ func TestUOTv2ThroughSOCKSConnect(t *testing.T) {
 			return
 		}
 		destination, err := socks5.ReadAddr(conn, make([]byte, socks5.MaxAddrLen))
-		if err != nil || destination.String() != "8.8.8.8:53" {
+		if err != nil || destination.String() != "8.8.8.8:443" {
 			serverErr <- io.ErrUnexpectedEOF
 			return
 		}
@@ -68,13 +73,13 @@ func TestUOTv2ThroughSOCKSConnect(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		payload := make([]byte, length)
-		if _, err = io.ReadFull(conn, payload); err != nil || string(payload) != "ping" {
+		packetPayload := make([]byte, length)
+		if _, err = io.ReadFull(conn, packetPayload); err != nil || !bytes.Equal(packetPayload, expectedPayload) {
 			serverErr <- io.ErrUnexpectedEOF
 			return
 		}
-		if err = binary.Write(conn, binary.BigEndian, uint16(4)); err == nil {
-			_, err = conn.Write([]byte("pong"))
+		if err = binary.Write(conn, binary.BigEndian, length); err == nil {
+			_, err = conn.Write(packetPayload)
 		}
 		serverErr <- err
 	}()
@@ -83,37 +88,25 @@ func TestUOTv2ThroughSOCKSConnect(t *testing.T) {
 	packetConn, err := proxy.DialUDP(&M.Metadata{
 		Network: M.UDP,
 		DstIP:   netip.MustParseAddr("8.8.8.8"),
-		DstPort: 53,
+		DstPort: 443,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer packetConn.Close()
 	_ = packetConn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err = packetConn.WriteTo([]byte("ping"), nil); err != nil {
+	if _, err = packetConn.WriteTo(expectedPayload, nil); err != nil {
 		t.Fatal(err)
 	}
-	buffer := make([]byte, 32)
+	buffer := make([]byte, len(expectedPayload))
 	n, from, err := packetConn.ReadFrom(buffer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(buffer[:n]) != "pong" || from.String() != "8.8.8.8:53" {
-		t.Fatalf("unexpected response %q from %v", buffer[:n], from)
+	if !bytes.Equal(buffer[:n], expectedPayload) || from.String() != "8.8.8.8:443" {
+		t.Fatalf("unexpected %d-byte response from %v", n, from)
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestQUICFallsBackToTCP(t *testing.T) {
-	proxy := newMultiProxy(nil)
-	_, err := proxy.DialUDP(&M.Metadata{
-		Network: M.UDP,
-		DstIP:   netip.MustParseAddr("1.1.1.1"),
-		DstPort: 443,
-	})
-	if err == nil {
-		t.Fatal("expected UDP/443 to be rejected so the browser falls back to HTTP/2")
 	}
 }
