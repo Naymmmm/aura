@@ -12,7 +12,7 @@ export function validateReleaseChangelog(raw, tag) {
   const version = /^v(\d+)\.(\d+)\.(\d+)$/.exec(tag);
   if (!version) return [`tag must use vMAJOR.MINOR.PATCH, received ${tag}`];
   const text = raw.replaceAll('\r\n', '\n').trim();
-  const expectedHeading = `# v${version[1]}.${version[2]}${version[3]}`;
+  const expectedHeading = `# ${tag}`;
   if (text.split('\n', 1)[0] !== expectedHeading) errors.push(`first line must be ${expectedHeading}`);
   if (!text.includes('```diff\n')) errors.push('missing diff changelog block');
   if (!/^\+ .+:$/m.test(text)) errors.push('add at least one "+ Category:" line');
