@@ -106,3 +106,18 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Aura Core is part of the application, not an optional post-build artifact.
+# Build and place the helper plus its runtime dependencies beside aura.exe for
+# flutter run, local release builds, and CI builds alike.
+install(CODE "
+  execute_process(
+    COMMAND powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+      -File \"${CMAKE_CURRENT_SOURCE_DIR}/../tool/fetch_naive.ps1\"
+      -Target \"build/windows/x64/runner/\${CMAKE_INSTALL_CONFIG_NAME}\"
+    RESULT_VARIABLE AURA_CORE_BUNDLE_RESULT
+  )
+  if(NOT AURA_CORE_BUNDLE_RESULT EQUAL 0)
+    message(FATAL_ERROR \"Aura Core bundle failed (exit \${AURA_CORE_BUNDLE_RESULT})\")
+  endif()
+  " COMPONENT Runtime)

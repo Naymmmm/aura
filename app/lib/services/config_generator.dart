@@ -13,20 +13,28 @@ class ConfigGenerator {
   static Future<String> generate({
     required ServerConfig serverConfig,
     required String coreDir,
+    required String selectedServerTag,
   }) async {
+    final selected = serverConfig.byTag(selectedServerTag);
+    if (selected == null) {
+      throw ArgumentError.value(
+        selectedServerTag,
+        'selectedServerTag',
+        'server is not present in the current session',
+      );
+    }
     final config = <String, Object>{
       'version': 1,
       'tun': <String, Object>{'address': '172.19.0.1/30', 'mtu': 1400},
       'servers': [
-        for (final server in serverConfig.servers)
-          <String, Object>{
-            'tag': server.tag,
-            'host': server.host,
-            'connect_address': server.connectAddress(serverConfig.preferIp),
-            'port': 443,
-            'username': server.username,
-            'password': server.password,
-          },
+        <String, Object>{
+          'tag': selected.tag,
+          'host': selected.host,
+          'connect_address': selected.connectAddress(serverConfig.preferIp),
+          'port': 443,
+          'username': selected.username,
+          'password': selected.password,
+        },
       ],
     };
     final file = File('$coreDir${Platform.pathSeparator}config.json');

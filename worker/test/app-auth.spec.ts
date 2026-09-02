@@ -14,6 +14,7 @@ async function startLogin() {
     login_secret: string;
     authorize_url: string;
     expires_at: number;
+    handoff_url: string;
   }>();
 }
 
@@ -39,6 +40,22 @@ describe('Discord app authentication', () => {
     expect(login.login_id).toMatch(/^[a-f0-9-]{36}$/);
     expect(login.login_secret).toMatch(/^[a-f0-9]{64}$/);
     expect(login.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(login.handoff_url).toMatch(/^https:\/\/api\.copal\.run\/auth\/device\/[a-f0-9]{16}$/);
+  });
+
+  it('offers a temporary handoff page for approval on an unfiltered device', async () => {
+    const login = await startLogin();
+    const handoff = new URL(login.handoff_url);
+    const page = await worker.fetch(request(handoff.pathname), env);
+    const html = await page.text();
+
+    expect(page.status).toBe(200);
+    expect(html).toContain('Use an unfiltered device');
+    expect(html).toContain(login.handoff_url);
+
+    const redirect = await worker.fetch(request(`${handoff.pathname}/continue`), env);
+    expect(redirect.status).toBe(302);
+    expect(new URL(redirect.headers.get('location')!).origin).toBe('https://discord.com');
   });
 
   it('returns pending before Discord approves the browser login', async () => {
@@ -159,6 +176,46 @@ describe('Discord app authentication', () => {
     expect(body.account).toMatchObject({
       discord_id: '900000000000000002',
       plan: 'free_trial',
+    });
+  });
+
+  it('keeps legacy account credentials as a compatibility-only session path', async () => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('legacy-token'));
+    const tokenHash = [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+    await env.SERVERS.put('accounts', JSON.stringify({
+      legacy01: {
+        id: 'legacy01',
+        name: 'Legacy User',
+        token_hash: tokenHash,
+        created_at: 1,
+        expires_at: Math.floor(Date.now() / 1000) + 86400,
+        budget_gb: 50,
+        source: 'admin',
+      },
+    }));
+    await env.SERVERS.put(
+      'v1',
+      JSON.stringify({ version: 1, servers: [{ tag: 'romeo', host: 'romeo.example', ip: '1.2.3.4' }] })
+    );
+    await env.SERVERS.put('pool', JSON.stringify({ romeo: [{ user: 'leased-user', pass: 'leased-pass' }] }));
+
+    const response = await worker.fetch(
+      request('/v1/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ account_id: 'legacy01', token: 'legacy-token' }),
+      }),
+      env
+    );
+    const body = await response.json<{ account: { discord_id: string; display_name: string; plan: string } }>();
+
+    expect(response.status).toBe(200);
+    expect(body.account).toMatchObject({
+      discord_id: 'legacy01',
+      display_name: 'Legacy User',
+      plan: 'standard',
     });
   });
 

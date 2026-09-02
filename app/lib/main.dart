@@ -10,11 +10,11 @@ import 'ui/login_view.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Compact dashboard window; close waits for tunnel cleanup before exit.
+  // Compact desktop control surface; close waits for tunnel cleanup before exit.
   await windowManager.ensureInitialized();
   const winOpts = WindowOptions(
-    size: Size(500, 760),
-    minimumSize: Size(420, 620),
+    size: Size(560, 780),
+    minimumSize: Size(460, 640),
     center: true,
     title: 'Aura',
     titleBarStyle: TitleBarStyle.normal,
@@ -134,10 +134,25 @@ class AuraApp extends StatelessWidget {
       supportedLocales: FLocalizations.supportedLocales,
       theme: materialTheme.copyWith(
         colorScheme: materialTheme.colorScheme.copyWith(
+          primary: const Color(0xFFD8FF67),
+          onPrimary: const Color(0xFF101507),
+          surface: const Color(0xFF090B10),
+          surfaceContainerLow: const Color(0xFF10141C),
+          surfaceContainerHigh: const Color(0xFF181E29),
           tertiary: foruiTheme.colors.mutedForeground,
           onTertiary: foruiTheme.colors.background,
         ),
         scaffoldBackgroundColor: foruiTheme.colors.background,
+        cardTheme: const CardThemeData(elevation: 0, margin: EdgeInsets.zero),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFF0B0E14),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFF303745)),
+          ),
+        ),
       ),
       builder: (context, child) => FTheme(
         data: foruiTheme,

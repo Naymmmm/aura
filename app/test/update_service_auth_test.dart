@@ -10,6 +10,33 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test('uses the year.minor.hotfix release version', () {
+    expect(UpdateService.appVersion, 'v26.0.1');
+  });
+
+  test(
+    'macOS updater is AppleScript that fetches, verifies, mounts, and notifies',
+    () {
+      final script = UpdateService.macUpdaterScript(
+        appBundle: '/Applications/Aura.app',
+        appPid: 42,
+        authToken: 'aura_token',
+        legacyAccountId: 'legacy01',
+        version: 'v26.0.1',
+        sha256: 'abc123',
+      );
+
+      expect(script, contains('curl'));
+      expect(script, contains('/dl/latest-macos'));
+      expect(script, contains('shasum -a 256'));
+      expect(script, contains('hdiutil attach'));
+      expect(script, contains('display notification'));
+      expect(script, contains('v26.0.1'));
+      expect(script, contains('X-Aura-Account-Id: legacy01'));
+      expect(script, isNot(contains('\n+')));
+    },
+  );
+
   test('gated updater sends the saved Discord app token', () async {
     final temp = await Directory.systemTemp.createTemp('aura-update-auth-');
     addTearDown(() => temp.delete(recursive: true));
@@ -18,7 +45,10 @@ void main() {
     final hash = sha256.convert(zip).toString();
     final client = MockClient((request) async {
       if (request.url.path == '/v1/release/meta') {
-        return http.Response(jsonEncode({'version': 'v9.9.9', 'sha256': hash}), 200);
+        return http.Response(
+          jsonEncode({'version': 'v9.9.9', 'sha256': hash}),
+          200,
+        );
       }
       if (request.url.path == '/dl/${UpdateService.platformKey()}') {
         expect(request.headers['authorization'], 'Bearer aura_saved_token');
@@ -34,6 +64,9 @@ void main() {
 
     await service.stage('v9.9.9', authToken: 'aura_saved_token');
 
-    expect(await File('${temp.path}${Platform.pathSeparator}aura.exe').readAsBytes(), [1, 2, 3]);
+    expect(
+      await File('${temp.path}${Platform.pathSeparator}aura.exe').readAsBytes(),
+      [1, 2, 3],
+    );
   });
 }

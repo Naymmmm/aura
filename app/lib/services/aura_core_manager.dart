@@ -13,7 +13,7 @@ import 'package:path_provider/path_provider.dart';
 class AuraCoreManager {
   AuraCoreManager._();
 
-  static const version = '0.3.0';
+  static const version = '26.0.1';
   static const _port = 45873;
   static String? _dir;
   static String? _token;
@@ -192,11 +192,18 @@ class AuraCoreManager {
     try {
       final streamed = await client
           .send(request)
-          .timeout(const Duration(seconds: 8));
+          .timeout(requestTimeoutFor(method, path));
       return await http.Response.fromStream(streamed);
     } finally {
       client.close();
     }
+  }
+
+  static Duration requestTimeoutFor(String method, String path) {
+    if (method == 'POST' && path == '/v1/start') {
+      return const Duration(seconds: 20);
+    }
+    return const Duration(seconds: 8);
   }
 
   static Future<void> _install(String stateDir) async {
@@ -240,7 +247,7 @@ class AuraCoreManager {
 
   static Future<void> _installWindows(String bundle, String stateDir) async {
     final script = File(_p(stateDir, 'install-helper.ps1'));
-    await script.writeAsString(_windowsInstaller(bundle, stateDir));
+    await script.writeAsString(windowsInstallerScript(bundle, stateDir));
     final result = await Process.run('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
@@ -271,38 +278,53 @@ class AuraCoreManager {
     }
   }
 
-  static String _windowsInstaller(String bundle, String stateDir) {
+  static String windowsInstallerScript(String bundle, String stateDir) {
     final source = _ps(bundle);
     final state = _ps(stateDir);
     return r'''
+$resultFile = Join-Path $PSScriptRoot 'install-result.log'
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
   try {
     $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'))
-    exit $p.ExitCode
   } catch { Write-Error "Administrator approval failed: $_"; exit 2 }
+  if ($p.ExitCode -ne 0) {
+    $detail = if (Test-Path -LiteralPath $resultFile) { Get-Content -Raw -LiteralPath $resultFile } else { "Elevated helper installer exited with code $($p.ExitCode)" }
+    Write-Error $detail
+  }
+  exit $p.ExitCode
 }
 $ErrorActionPreference = 'Stop'
+try {
 $source = @@SOURCE@@
 $state = @@STATE@@
 $install = Join-Path $env:ProgramFiles 'Aura Core'
 $runtime = Join-Path $env:ProgramData 'Aura Core'
 $taskName = 'Aura Core Helper'
+$installedCore = Join-Path $install 'aura-core.exe'
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $install | Out-Null
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 & icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -eq $installedCore } |
+  Stop-Process -Force
 Get-ChildItem $install -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $source '*') $install -Recurse -Force
-$exe = Join-Path $install 'aura-core.exe'
 $token = Join-Path $state 'api.token'
 $arguments = 'serve --state-dir "' + $runtime + '" --token-file "' + $token + '"'
-$action = New-ScheduledTaskAction -Execute $exe -Argument $arguments
+$action = New-ScheduledTaskAction -Execute $installedCore -Argument $arguments
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
+Set-Content -LiteralPath $resultFile -Value 'ok'
+} catch {
+  Set-Content -LiteralPath $resultFile -Value ($_ | Out-String)
+  exit 1
+}
 '''
         .replaceAll('@@SOURCE@@', source)
         .replaceAll('@@STATE@@', state);

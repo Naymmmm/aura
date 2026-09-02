@@ -72,13 +72,15 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
     return json({ error: 'bad_request' }, 400);
   }
 
-  const archiveKey = `archive/${version}/${artifact}.zip`;
+  const extension = artifact === 'macos' && file.name.toLowerCase().endsWith('.dmg') ? 'dmg' : 'zip';
+  const contentType = extension === 'dmg' ? 'application/x-apple-diskimage' : 'application/zip';
+  const archiveKey = `archive/${version}/${artifact}.${extension}`;
   let sha256: string;
   if (/^[a-f0-9]{64}$/.test(suppliedSha256)) {
     await env.RELEASES.put(archiveKey, file.stream(), {
       httpMetadata: {
-        contentType: 'application/zip',
-        contentDisposition: `attachment; filename="${artifactFileName(artifact, version)}"`,
+        contentType,
+        contentDisposition: `attachment; filename="${artifactFileName(artifact, version, extension)}"`,
       },
     });
     sha256 = suppliedSha256;
@@ -88,8 +90,8 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
     const [, digest] = await Promise.all([
       env.RELEASES.put(archiveKey, r2Body, {
         httpMetadata: {
-          contentType: 'application/zip',
-          contentDisposition: `attachment; filename="${artifactFileName(artifact, version)}"`,
+          contentType,
+          contentDisposition: `attachment; filename="${artifactFileName(artifact, version, extension)}"`,
         },
       }),
       digestBody.pipeTo(digestStream).then(() => digestStream.digest),
@@ -217,9 +219,9 @@ function canonicalKey(artifact: ArchiveArtifact): string {
   return 'source';
 }
 
-function artifactFileName(artifact: ArchiveArtifact, version: string): string {
+function artifactFileName(artifact: ArchiveArtifact, version: string, extension?: 'zip' | 'dmg'): string {
   if (artifact === 'windows') return `aura-${version}-windows-amd64.zip`;
-  if (artifact === 'macos') return `aura-${version}-macos-arm64.zip`;
+  if (artifact === 'macos') return `aura-${version}-macos-arm64.${extension ?? 'dmg'}`;
   return `aura-${version}-source.zip`;
 }
 
@@ -343,7 +345,9 @@ export async function serveDownloadPage(env: Env, canDownloadSource: boolean): P
         .filter((artifact) => manifest.artifacts[artifact])
         .map((artifact) => {
           const label = artifact === 'windows' ? 'Windows' : artifact === 'macos' ? 'macOS' : 'Source code';
-          return `<a href="/dl/archive/${manifest.version}/${artifact}.zip">${label}</a>`;
+          const key = manifest.artifacts[artifact]!.key;
+          const extension = key.endsWith('.dmg') ? 'dmg' : 'zip';
+          return `<a href="/dl/archive/${manifest.version}/${artifact}.${extension}">${label}</a>`;
         })
         .join('');
       return `<article><h2>${manifest.version}</h2><div class="links">${links}</div></article>`;
@@ -387,7 +391,7 @@ export async function serveReleaseMeta(req: Request, env: Env): Promise<Response
 }
 
 const VERSION_RE = /^v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/;
-const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(windows|macos|source)\.zip$/;
+const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|macos\.(?:zip|dmg)|source\.zip)$/;
 
 // GET /dl/{key} — caller has already passed the Discord session gate.
 export async function serveDownload(req: Request, env: Env, key: string): Promise<Response> {
@@ -417,8 +421,9 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
   const obj = range ? await env.RELEASES.get(objectKey, { range }) : await env.RELEASES.get(objectKey);
   if (!obj) return json({ error: 'not found' }, 404);
 
+  const isDmg = objectKey.endsWith('.dmg');
   const headers: Record<string, string> = {
-    'content-type': 'application/zip',
+    'content-type': isDmg ? 'application/x-apple-diskimage' : 'application/zip',
     'content-disposition': `attachment; filename="${dlName(objectKey, key)}"`,
     etag: obj.etag,
     'accept-ranges': 'bytes',
@@ -448,13 +453,15 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
 }
 
 function dlName(objectKey: string, requestedKey: string): string {
-  const match = objectKey.match(/^archive\/(v[^/]+)\/(windows|macos|source)\.zip$/);
-  if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1]);
+  const match = objectKey.match(/^archive\/(v[^/]+)\/(windows|macos|source)\.(zip|dmg)$/);
+  if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1], match[3] as 'zip' | 'dmg');
   if (requestedKey === 'latest') return 'aura-windows-amd64.zip';
-  if (requestedKey === 'latest-macos') return 'aura-macos-arm64.zip';
+  if (requestedKey === 'latest-macos') return isDmgKey(objectKey) ? 'aura-macos-arm64.dmg' : 'aura-macos-arm64.zip';
   if (requestedKey === 'source') return 'aura-source.zip';
   return 'aura-release.zip';
 }
+
+function isDmgKey(value: string): boolean { return value.endsWith('.dmg'); }
 
 // bytes=start-end | bytes=start-  (single range only; others ignored → full 200)
 function parseRange(h: string | null): { offset: number; length: number } | { offset: number } | null {

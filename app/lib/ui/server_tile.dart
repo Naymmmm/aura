@@ -10,12 +10,16 @@ class ServerTile extends StatelessWidget {
     required this.latencyMs,
     required this.isActive,
     required this.isSelected,
+    required this.onTap,
+    required this.locked,
   });
 
   final ServerInfo server;
   final int? latencyMs;
   final bool isActive;
   final bool isSelected;
+  final VoidCallback? onTap;
+  final bool locked;
 
   @override
   Widget build(BuildContext context) {
@@ -30,72 +34,92 @@ class ServerTile extends StatelessWidget {
       tileColor = theme.colorScheme.surfaceContainerLow;
     }
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
-      decoration: BoxDecoration(
-        color: tileColor,
-        borderRadius: BorderRadius.circular(12),
-        border: isActive
-            ? Border.all(color: theme.colorScheme.primary, width: 1.5)
-            : null,
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.15),
-            child: Icon(
-              Icons.shield_outlined,
-              size: 18,
-              color: theme.colorScheme.primary,
-            ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: locked ? null : onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          decoration: BoxDecoration(
+            color: tileColor,
+            borderRadius: BorderRadius.circular(16),
+            border: isActive || isSelected
+                ? Border.all(color: theme.colorScheme.primary, width: 1.5)
+                : Border.all(
+                    color: theme.colorScheme.outlineVariant.withValues(
+                      alpha: 0.5,
+                    ),
+                  ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 16,
+                backgroundColor: theme.colorScheme.primary.withValues(
+                  alpha: 0.15,
+                ),
+                child: Icon(
+                  Icons.shield_outlined,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(server.label, style: theme.textTheme.titleSmall),
-                    if (isActive) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.primary,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          'MOGGING',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.onPrimary,
-                            fontSize: 9,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 0.5,
+                    Row(
+                      children: [
+                        Text(server.label, style: theme.textTheme.titleSmall),
+                        if (isActive || isSelected) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.primary,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              isActive ? 'CONNECTED' : 'SELECTED',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onPrimary,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      server.host,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 11,
                       ),
-                    ],
+                    ),
                   ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  server.host,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
+              ),
+              if (locked)
+                Icon(
+                  Icons.lock_outline,
+                  size: 15,
+                  color: theme.colorScheme.onSurfaceVariant,
+                )
+              else
+                _LatencyChip(latency: latencyMs, isActive: isActive),
+            ],
           ),
-          _LatencyChip(latency: latencyMs, isActive: isActive),
-        ],
+        ),
       ),
     );
   }

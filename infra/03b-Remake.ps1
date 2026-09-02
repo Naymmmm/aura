@@ -41,6 +41,7 @@ function Launch-A1([string]$Name, [string]$Ad, [int]$Ocpus, [int]$MemGB) {
     "--hostname-label",      $Name,
     "--subnet-id",           $d.subnetId,
     "--assign-public-ip",    "true",
+    "--assign-ipv6-ip",      "true",
     "--image-id",            $d.imageId,
     "--ssh-authorized-keys-file", $KeyFile,
     "--user-data-file",      $UserData,

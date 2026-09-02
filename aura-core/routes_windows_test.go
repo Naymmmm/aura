@@ -20,4 +20,3 @@ func TestWindowsInterfaceSetupIsIdempotent(t *testing.T) {
 		t.Fatalf("cleanup must preserve the desired IPv4 address: %s", script)
 	}
 }
-

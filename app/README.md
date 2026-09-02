@@ -1,4 +1,4 @@
-# Aura desktop 0.3.0
+# Aura desktop 26.0.1
 
 Flutter desktop UI for Aura on Windows and macOS.
 

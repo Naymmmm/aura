@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import workflow from '../../.github/workflows/build.yml?raw';
 import backfillWorkflow from '../../.github/workflows/backfill-release-archive.yml?raw';
+import windowsBuild from '../../app/windows/CMakeLists.txt?raw';
+import newServers from '../../infra/03-NewServers.ps1?raw';
+import remakeServers from '../../infra/03b-Remake.ps1?raw';
+import serverUserData from '../../infra/user-data.yaml?raw';
+import udpServerMigration from '../../infra/07-EnableUdpOverTcp.ps1?raw';
 
 describe('release workflow', () => {
   it('builds tracked source and publishes every artifact to the version archive', () => {
@@ -20,6 +25,33 @@ describe('release workflow', () => {
     expect(workflow).toContain('validate-release-changelog.mjs');
     expect(workflow).toContain('/v1/releases/announce');
     expect(workflow).toContain('body_path: releases/${{ github.ref_name }}.md');
+  });
+
+  it('ships macOS as a DMG instead of a zip', () => {
+    expect(workflow).toContain('aura-macos-arm64.dmg');
+    expect(workflow).toContain('hdiutil create');
+    expect(workflow).toContain('publish macos dist/aura-macos-arm64/aura-macos-arm64.dmg');
+    expect(workflow).not.toContain('ditto -c -k --keepParent "$APP" aura-macos-arm64.zip');
+  });
+
+  it('bundles Aura Core during every normal Windows app build', () => {
+    expect(windowsBuild).toContain('tool/fetch_naive.ps1');
+    expect(windowsBuild).toContain('COMPONENT Runtime');
+    expect(windowsBuild).toContain('Aura Core bundle failed');
+  });
+
+  it('keeps replacement proxy servers IPv6-capable', () => {
+    expect(newServers).toMatch(/"--assign-ipv6-ip",\s+"true"/);
+    expect(remakeServers).toMatch(/"--assign-ipv6-ip",\s+"true"/);
+    expect(serverUserData).toContain('dhcp6: true');
+    expect(serverUserData).toContain('accept-ra: true');
+    expect(udpServerMigration).toContain('--network host');
+    expect(udpServerMigration).toContain('$Command.Replace("`r", "")');
+    expect(udpServerMigration).toContain('listen = "0.0.0.0"');
+    expect(udpServerMigration).toContain('iptables -C INPUT');
+    expect(udpServerMigration).toContain('netfilter-persistent save');
+    expect(udpServerMigration).toContain('SslStream');
+    expect(udpServerMigration).not.toContain('--proxy $proxy');
   });
 
   it('backfills every historical binary and generated source without leaving an old release as latest', () => {

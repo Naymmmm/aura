@@ -12,7 +12,7 @@
 // GET  /dl/{key}                 → Discord-gated release download
 
 import { json, HDRS, safeEqual } from './util';
-import { handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
+import { authenticateLegacyCredentials, handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
 import { serveDownload, serveDownloadPage, serveReleaseMeta } from './releases';
@@ -23,7 +23,7 @@ import {
   downloadSessionDiscordId,
   loginRedirect,
 } from './discord_auth';
-import { authenticateAppToken, finishAppDiscordLogin, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
+import { authenticateAppToken, finishAppDiscordLogin, handleAppDiscordHandoff, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
 import { handleDiscordInteraction, reconcileExpiredAccountRoles } from './discord_bot';
 import { getDiscordAccount } from './accounts_v2';
 
@@ -46,6 +46,11 @@ export default {
     if (url.pathname === '/v1/auth/session') {
       if (req.method !== 'DELETE') return json({ error: 'method_not_allowed' }, 405);
       return revokeAppToken(req, env);
+    }
+    const deviceMatch = url.pathname.match(/^\/auth\/device\/([a-f0-9]{16})(\/continue)?$/);
+    if (deviceMatch) {
+      if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
+      return handleAppDiscordHandoff(req, env, deviceMatch[1], !!deviceMatch[2]);
     }
     if (url.pathname === '/v1/discord/interactions') {
       if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
@@ -108,6 +113,17 @@ export default {
 async function downloadAccess(req: Request, env: Env): Promise<{ authenticated: boolean; canDownloadSource: boolean }> {
   const appAccount = await authenticateAppToken(req, env);
   if (appAccount) return { authenticated: true, canDownloadSource: isStandard(appAccount.account.plan) };
+  const legacyId = req.headers.get('x-aura-account-id') ?? '';
+  const authorization = req.headers.get('authorization') ?? '';
+  const legacyToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  const legacy = legacyId ? await authenticateLegacyCredentials(env, legacyId, legacyToken) : null;
+  if (
+    legacy &&
+    !legacy.disabled &&
+    legacy.expires_at > Math.floor(Date.now() / 1000)
+  ) {
+    return { authenticated: true, canDownloadSource: true };
+  }
   const discordId = await downloadSessionDiscordId(req, env);
   if (!discordId) return { authenticated: false, canDownloadSource: false };
   const account = await getDiscordAccount(env, discordId);

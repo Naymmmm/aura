@@ -49,8 +49,11 @@ class AccountStatus {
     return AccountStatus(
       discordId: json['discord_id'] as String,
       username: json['username'] as String,
-      displayName: json['display_name'] as String? ?? json['username'] as String,
-      expiresAt: rawExpiry > 0 ? DateTime.fromMillisecondsSinceEpoch(rawExpiry * 1000) : null,
+      displayName:
+          json['display_name'] as String? ?? json['username'] as String,
+      expiresAt: rawExpiry > 0
+          ? DateTime.fromMillisecondsSinceEpoch(rawExpiry * 1000)
+          : null,
       budgetGb: (json['budget_gb'] as num?)?.toInt() ?? 0,
       plan: switch (rawPlan) {
         'free_trial' => AccountPlan.freeTrial,
@@ -61,10 +64,19 @@ class AccountStatus {
   }
 }
 
+enum SavedAuthMode { discord, legacy }
+
 class SavedAuth {
+  final SavedAuthMode mode;
   final String token;
   final DateTime expiresAt;
-  const SavedAuth({required this.token, required this.expiresAt});
+  final String? accountId;
+  const SavedAuth({
+    required this.mode,
+    required this.token,
+    required this.expiresAt,
+    this.accountId,
+  });
 }
 
 class SessionInfo {
@@ -90,11 +102,11 @@ class SessionService {
     File? credentialsFile,
     BrowserLauncher? openBrowser,
     PollDelay? pollDelay,
-  })  : _apiBase = apiBase ?? 'https://api.copal.run',
-        _client = client ?? http.Client(),
-        _credentialsFileOverride = credentialsFile,
-        _openBrowser = openBrowser ?? _launchBrowser,
-        _pollDelay = pollDelay ?? Future<void>.delayed;
+  }) : _apiBase = apiBase ?? 'https://api.copal.run',
+       _client = client ?? http.Client(),
+       _credentialsFileOverride = credentialsFile,
+       _openBrowser = openBrowser ?? _launchBrowser,
+       _pollDelay = pollDelay ?? Future<void>.delayed;
 
   final String _apiBase;
   final http.Client _client;
@@ -114,16 +126,37 @@ class SessionService {
     final file = await _credsFile();
     if (!await file.exists()) return null;
     try {
-      final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final json =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
       final token = json['token'] as String?;
+      final accountId = json['account_id'] as String?;
+      final rawMode = json['auth_mode'] as String?;
+      if ((rawMode == 'legacy' || (rawMode == null && accountId != null)) &&
+          token != null &&
+          token.isNotEmpty &&
+          accountId != null &&
+          accountId.isNotEmpty) {
+        return SavedAuth(
+          mode: SavedAuthMode.legacy,
+          token: token,
+          accountId: accountId,
+          expiresAt: DateTime.utc(9999),
+        );
+      }
       final rawExpiry = (json['token_expires_at'] as num?)?.toInt();
-      if (token == null || !token.startsWith('aura_') || rawExpiry == null) throw const FormatException();
+      if (token == null || !token.startsWith('aura_') || rawExpiry == null) {
+        throw const FormatException();
+      }
       final expiry = DateTime.fromMillisecondsSinceEpoch(rawExpiry * 1000);
       if (!expiry.isAfter(DateTime.now())) {
         await file.delete();
         return null;
       }
-      return SavedAuth(token: token, expiresAt: expiry);
+      return SavedAuth(
+        mode: SavedAuthMode.discord,
+        token: token,
+        expiresAt: expiry,
+      );
     } catch (_) {
       try {
         await file.delete();
@@ -133,41 +166,68 @@ class SessionService {
   }
 
   Future<SessionInfo> loginWithDiscord() async {
+    return _loginWithDiscord(useHandoff: false);
+  }
+
+  Future<SessionInfo> loginWithDiscordViaHandoff() async {
+    return _loginWithDiscord(useHandoff: true);
+  }
+
+  Future<SessionInfo> _loginWithDiscord({required bool useHandoff}) async {
     try {
       final start = await _client
-          .post(Uri.parse('$_apiBase/v1/auth/discord/start'), headers: {'accept': 'application/json'})
+          .post(
+            Uri.parse('$_apiBase/v1/auth/discord/start'),
+            headers: {'accept': 'application/json'},
+          )
           .timeout(const Duration(seconds: 20));
-      if (start.statusCode != 200) throw SessionException(AuthErrorKind.network);
+      if (start.statusCode != 200) {
+        throw SessionException(AuthErrorKind.network);
+      }
       final login = jsonDecode(start.body) as Map<String, dynamic>;
       final loginId = login['login_id'] as String;
       final loginSecret = login['login_secret'] as String;
       final authorizeUrl = Uri.parse(login['authorize_url'] as String);
+      final handoffUrl = Uri.parse(
+        login['handoff_url'] as String? ?? authorizeUrl.toString(),
+      );
       final expiresAt = (login['expires_at'] as num).toInt();
-      await _openBrowser(authorizeUrl);
+      await _openBrowser(useHandoff ? handoffUrl : authorizeUrl);
 
       while (DateTime.now().millisecondsSinceEpoch ~/ 1000 < expiresAt) {
         final poll = await _client
             .post(
               Uri.parse('$_apiBase/v1/auth/discord/poll'),
-              headers: {'content-type': 'application/json', 'accept': 'application/json'},
-              body: jsonEncode({'login_id': loginId, 'login_secret': loginSecret}),
+              headers: {
+                'content-type': 'application/json',
+                'accept': 'application/json',
+              },
+              body: jsonEncode({
+                'login_id': loginId,
+                'login_secret': loginSecret,
+              }),
             )
             .timeout(const Duration(seconds: 20));
         if (poll.statusCode == 202) {
           await _pollDelay(const Duration(seconds: 2));
           continue;
         }
-        if (poll.statusCode != 200) throw SessionException(AuthErrorKind.network);
+        if (poll.statusCode != 200) {
+          throw SessionException(AuthErrorKind.network);
+        }
         final approved = jsonDecode(poll.body) as Map<String, dynamic>;
         final token = approved['token'] as String;
         final tokenExpiry = (approved['token_expires_at'] as num).toInt();
         final file = await _credsFile();
         await file.parent.create(recursive: true);
-        await file.writeAsString(jsonEncode({
-          'token': token,
-          'token_expires_at': tokenExpiry,
-          'account': approved['account'],
-        }));
+        await file.writeAsString(
+          jsonEncode({
+            'auth_mode': 'discord',
+            'token': token,
+            'token_expires_at': tokenExpiry,
+            'account': approved['account'],
+          }),
+        );
         return openSession(token: token);
       }
       throw SessionException(AuthErrorKind.network);
@@ -178,15 +238,36 @@ class SessionService {
     }
   }
 
+  Future<SessionInfo> loginLegacy(String accountId, String token) async {
+    final normalizedId = accountId.trim();
+    final normalizedToken = token.trim();
+    if (normalizedId.isEmpty || normalizedToken.isEmpty) {
+      throw SessionException(AuthErrorKind.badCreds);
+    }
+    return _openLegacySession(normalizedId, normalizedToken, remember: true);
+  }
+
   Future<SessionInfo> openSession({String? token}) async {
-    final auth = token == null ? await saved() : SavedAuth(token: token, expiresAt: DateTime.now());
+    final auth = token == null
+        ? await saved()
+        : SavedAuth(
+            mode: SavedAuthMode.discord,
+            token: token,
+            expiresAt: DateTime.now(),
+          );
     if (auth == null) throw SessionException(AuthErrorKind.badCreds);
+    if (auth.mode == SavedAuthMode.legacy) {
+      return _openLegacySession(auth.accountId!, auth.token, remember: false);
+    }
     http.Response response;
     try {
       response = await _client
           .post(
             Uri.parse('$_apiBase/v1/session'),
-            headers: {'authorization': 'Bearer ${auth.token}', 'accept': 'application/json'},
+            headers: {
+              'authorization': 'Bearer ${auth.token}',
+              'accept': 'application/json',
+            },
           )
           .timeout(const Duration(seconds: 20));
     } catch (_) {
@@ -196,21 +277,99 @@ class SessionService {
       case 200:
         final json = jsonDecode(response.body) as Map<String, dynamic>;
         final config = ServerConfig.fromJson(json);
-        if (config.servers.isEmpty) throw SessionException(AuthErrorKind.poolExhausted);
+        if (config.servers.isEmpty) {
+          throw SessionException(AuthErrorKind.poolExhausted);
+        }
         return SessionInfo(
           config: config,
           sessionId: json['session_id'] as String,
-          expiresAt: DateTime.fromMillisecondsSinceEpoch((json['expires_at'] as num).toInt() * 1000),
-          account: AccountStatus.fromJson(json['account'] as Map<String, dynamic>),
+          expiresAt: DateTime.fromMillisecondsSinceEpoch(
+            (json['expires_at'] as num).toInt() * 1000,
+          ),
+          account: AccountStatus.fromJson(
+            json['account'] as Map<String, dynamic>,
+          ),
         );
       case 401:
         throw SessionException(AuthErrorKind.badCreds);
       case 403:
-        throw SessionException(response.body.contains('no_credit')
-            ? AuthErrorKind.noCredit
-            : response.body.contains('disabled')
-                ? AuthErrorKind.accountDisabled
-                : AuthErrorKind.accountExpired);
+        throw SessionException(
+          response.body.contains('no_credit')
+              ? AuthErrorKind.noCredit
+              : response.body.contains('disabled')
+              ? AuthErrorKind.accountDisabled
+              : AuthErrorKind.accountExpired,
+        );
+      case 503:
+        throw SessionException(AuthErrorKind.poolExhausted);
+      default:
+        throw SessionException(AuthErrorKind.network);
+    }
+  }
+
+  Future<SessionInfo> _openLegacySession(
+    String accountId,
+    String token, {
+    required bool remember,
+  }) async {
+    http.Response response;
+    try {
+      response = await _client
+          .post(
+            Uri.parse('$_apiBase/v1/session'),
+            headers: {
+              'content-type': 'application/json',
+              'accept': 'application/json',
+            },
+            body: jsonEncode({'account_id': accountId, 'token': token}),
+          )
+          .timeout(const Duration(seconds: 20));
+    } catch (_) {
+      throw SessionException(AuthErrorKind.network);
+    }
+    final session = _sessionFromResponse(response);
+    if (remember) {
+      final file = await _credsFile();
+      await file.parent.create(recursive: true);
+      await file.writeAsString(
+        jsonEncode({
+          'auth_mode': 'legacy',
+          'account_id': accountId,
+          'token': token,
+        }),
+      );
+    }
+    return session;
+  }
+
+  SessionInfo _sessionFromResponse(http.Response response) {
+    switch (response.statusCode) {
+      case 200:
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final config = ServerConfig.fromJson(json);
+        if (config.servers.isEmpty) {
+          throw SessionException(AuthErrorKind.poolExhausted);
+        }
+        return SessionInfo(
+          config: config,
+          sessionId: json['session_id'] as String,
+          expiresAt: DateTime.fromMillisecondsSinceEpoch(
+            (json['expires_at'] as num).toInt() * 1000,
+          ),
+          account: AccountStatus.fromJson(
+            json['account'] as Map<String, dynamic>,
+          ),
+        );
+      case 401:
+        throw SessionException(AuthErrorKind.badCreds);
+      case 403:
+        throw SessionException(
+          response.body.contains('no_credit')
+              ? AuthErrorKind.noCredit
+              : response.body.contains('disabled')
+              ? AuthErrorKind.accountDisabled
+              : AuthErrorKind.accountExpired,
+        );
       case 503:
         throw SessionException(AuthErrorKind.poolExhausted);
       default:
@@ -220,7 +379,9 @@ class SessionService {
 
   Future<bool> heartbeat(String sessionId) async {
     try {
-      final response = await _client.post(Uri.parse('$_apiBase/v1/session/$sessionId/heartbeat')).timeout(const Duration(seconds: 15));
+      final response = await _client
+          .post(Uri.parse('$_apiBase/v1/session/$sessionId/heartbeat'))
+          .timeout(const Duration(seconds: 15));
       return response.statusCode == 200;
     } catch (_) {
       return true;
@@ -229,14 +390,16 @@ class SessionService {
 
   Future<void> close(String sessionId) async {
     try {
-      await _client.delete(Uri.parse('$_apiBase/v1/session/$sessionId')).timeout(const Duration(seconds: 15));
+      await _client
+          .delete(Uri.parse('$_apiBase/v1/session/$sessionId'))
+          .timeout(const Duration(seconds: 15));
     } catch (_) {}
   }
 
   Future<void> forget() async {
     final file = await _credsFile();
     final auth = await saved();
-    if (auth != null) {
+    if (auth != null && auth.mode == SavedAuthMode.discord) {
       try {
         await _client
             .delete(
@@ -255,11 +418,18 @@ class SessionService {
 
   static Future<void> _launchBrowser(Uri uri) async {
     if (Platform.isWindows) {
-      await Process.start('rundll32', ['url.dll,FileProtocolHandler', uri.toString()], mode: ProcessStartMode.detached);
+      await Process.start('rundll32', [
+        'url.dll,FileProtocolHandler',
+        uri.toString(),
+      ], mode: ProcessStartMode.detached);
     } else if (Platform.isMacOS) {
-      await Process.start('open', [uri.toString()], mode: ProcessStartMode.detached);
+      await Process.start('open', [
+        uri.toString(),
+      ], mode: ProcessStartMode.detached);
     } else {
-      await Process.start('xdg-open', [uri.toString()], mode: ProcessStartMode.detached);
+      await Process.start('xdg-open', [
+        uri.toString(),
+      ], mode: ProcessStartMode.detached);
     }
   }
 }

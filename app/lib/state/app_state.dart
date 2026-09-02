@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/server_info.dart';
+import '../models/app_log_entry.dart';
 import '../services/config_generator.dart';
 import '../services/session_service.dart';
 import '../services/aura_core_manager.dart';
@@ -51,6 +52,9 @@ class AppState extends ChangeNotifier {
   String? _activeServer;
   String? get activeServer => _activeServer;
 
+  String? _selectedServerTag;
+  String? get selectedServerTag => _selectedServerTag;
+
   final Map<String, int> _latencies = {};
   Map<String, int> get latencies => Map.unmodifiable(_latencies);
 
@@ -62,8 +66,8 @@ class AppState extends ChangeNotifier {
   String? _statusLine;
   String? get statusLine => _statusLine;
 
-  final List<String> _logs = [];
-  List<String> get logs => List.unmodifiable(_logs);
+  final List<AppLogEntry> _logs = [];
+  List<AppLogEntry> get logs => List.unmodifiable(_logs);
 
   final UsageTracker _usage = UsageTracker();
   int _budgetBytes = 0; // 0 = no budget configured (config not loaded yet)
@@ -92,11 +96,14 @@ class AppState extends ChangeNotifier {
   bool _shutdownRequested = false;
   Completer<void>? _connectDone;
 
-  static String _ts() => DateTime.now().toIso8601String().substring(11, 19);
-
   void _log(String line) {
-    _logs.insert(0, '${_ts()} $line');
+    _logs.insert(0, AppLogEntry.fromMessage(line));
     if (_logs.length > 500) _logs.removeLast();
+    notifyListeners();
+  }
+
+  void clearLogs() {
+    _logs.clear();
     notifyListeners();
   }
 
@@ -114,6 +121,7 @@ class AppState extends ChangeNotifier {
       try {
         _session = await _sessionService.openSession();
         _sessionOpen = true;
+        _syncSelectedServer();
         _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
         setPhase(VpnPhase.disconnected);
         _log('welcome back, ${_session!.account.displayName}');
@@ -168,7 +176,11 @@ class AppState extends ChangeNotifier {
     try {
       final saved = await _sessionService.saved();
       if (saved == null) throw StateError('Discord login expired');
-      await UpdateService().stage(v, authToken: saved.token);
+      await UpdateService().stage(
+        v,
+        authToken: saved.token,
+        legacyAccountId: saved.accountId,
+      );
       _updateStaged = true;
       _log('update $v staged — restart to install');
       return true;
@@ -200,6 +212,7 @@ class AppState extends ChangeNotifier {
     try {
       _session = await _sessionService.loginWithDiscord();
       _sessionOpen = true;
+      _syncSelectedServer();
       _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
       _log('Discord session opened for ${_session!.account.displayName}');
       setPhase(VpnPhase.disconnected);
@@ -210,6 +223,67 @@ class AppState extends ChangeNotifier {
       _sessionOpen = false;
       setPhase(VpnPhase.loggedOut);
       return false;
+    }
+  }
+
+  Future<bool> loginWithDiscordViaHandoff() async {
+    _authError = null;
+    try {
+      _session = await _sessionService.loginWithDiscordViaHandoff();
+      _sessionOpen = true;
+      _syncSelectedServer();
+      _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
+      _log('Discord session approved through remote handoff');
+      setPhase(VpnPhase.disconnected);
+      return true;
+    } on SessionException catch (e) {
+      _authError = e.kind;
+      _session = null;
+      _sessionOpen = false;
+      setPhase(VpnPhase.loggedOut);
+      return false;
+    }
+  }
+
+  Future<bool> loginLegacy(String accountId, String token) async {
+    _authError = null;
+    try {
+      _session = await _sessionService.loginLegacy(accountId, token);
+      _sessionOpen = true;
+      _syncSelectedServer();
+      _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
+      _log('legacy compatibility session opened');
+      setPhase(VpnPhase.disconnected);
+      return true;
+    } on SessionException catch (e) {
+      _authError = e.kind;
+      _session = null;
+      _sessionOpen = false;
+      setPhase(VpnPhase.loggedOut);
+      return false;
+    }
+  }
+
+  bool selectServer(String tag) {
+    if (_phase == VpnPhase.connected || _phase == VpnPhase.connecting) {
+      _log('server selection locked while connected');
+      return false;
+    }
+    if (_session?.config.byTag(tag) == null) return false;
+    if (_selectedServerTag == tag) return true;
+    _selectedServerTag = tag;
+    _log('selected server: $tag');
+    notifyListeners();
+    return true;
+  }
+
+  void _syncSelectedServer() {
+    final servers = _session?.config.servers ?? const <ServerInfo>[];
+    if (servers.isEmpty) {
+      _selectedServerTag = null;
+    } else if (_selectedServerTag == null ||
+        !servers.any((server) => server.tag == _selectedServerTag)) {
+      _selectedServerTag = servers.first.tag;
     }
   }
 
@@ -252,8 +326,14 @@ class AppState extends ChangeNotifier {
         }
         _session = await _sessionService.openSession();
         _sessionOpen = true;
+        _syncSelectedServer();
       }
       final cfg = _session!.config;
+      _syncSelectedServer();
+      final selected = _selectedServerTag;
+      if (selected == null) {
+        throw StateError('no server is available to connect');
+      }
       _budgetBytes = cfg.budgetGb * (1024 * 1024 * 1024);
       _monthUsed = await _usage.monthUsed();
       if (overBudget) {
@@ -264,7 +344,11 @@ class AppState extends ChangeNotifier {
       }
       final dir = await AuraCoreManager.dir;
       await Directory(dir).create(recursive: true);
-      await ConfigGenerator.generate(serverConfig: cfg, coreDir: dir);
+      await ConfigGenerator.generate(
+        serverConfig: cfg,
+        coreDir: dir,
+        selectedServerTag: selected,
+      );
       if (_shutdownRequested) return false;
       await AuraCoreManager.start(configDir: dir);
       if (_shutdownRequested) {
@@ -384,6 +468,7 @@ class AppState extends ChangeNotifier {
       }
       _session = await _sessionService.openSession();
       _sessionOpen = true;
+      _syncSelectedServer();
       _budgetBytes = _session!.config.budgetGb * (1024 * 1024 * 1024);
       _monthUsed = await _usage.monthUsed();
       _log('config refreshed: ${_session!.config.servers.length} servers');
@@ -469,9 +554,9 @@ class AppState extends ChangeNotifier {
         }
       }
       if (active != null && active != _activeServer) {
-        final prev = _activeServer;
-        _activeServer = active;
-        _log('server switch: ${prev ?? '?'} -> $active');
+        _log(
+          'ignored unexpected server report: $active (pinned to ${_activeServer ?? _selectedServerTag})',
+        );
       }
       _latencies
         ..clear()

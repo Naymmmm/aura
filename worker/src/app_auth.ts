@@ -13,6 +13,7 @@ interface PendingLogin {
   expires_at: number;
   status: 'pending' | 'approved';
   discord_id?: string;
+  handoff_code?: string;
 }
 
 interface AppSession {
@@ -44,6 +45,9 @@ function pendingLogin(value: unknown): PendingLogin | null {
   if ('discord_id' in value && value.discord_id !== undefined && typeof value.discord_id !== 'string') {
     return null;
   }
+  if ('handoff_code' in value && value.handoff_code !== undefined && typeof value.handoff_code !== 'string') {
+    return null;
+  }
   return value as PendingLogin;
 }
 
@@ -51,16 +55,19 @@ export async function startAppDiscordLogin(env: Env): Promise<Response> {
   const loginId = crypto.randomUUID();
   const loginSecret = randomHex(32);
   const state = randomHex(32);
+  const handoffCode = randomHex(8);
   const expiresAt = nowSec() + LOGIN_TTL;
   const login: PendingLogin = {
     secret_hash: await sha256Hex(loginSecret),
     state,
     expires_at: expiresAt,
     status: 'pending',
+    handoff_code: handoffCode,
   };
   await Promise.all([
     env.SERVERS.put(`app-login:${loginId}`, JSON.stringify(login), { expirationTtl: LOGIN_TTL }),
     env.SERVERS.put(`app-oauth-state:${state}`, loginId, { expirationTtl: LOGIN_TTL }),
+    env.SERVERS.put(`app-login-code:${handoffCode}`, loginId, { expirationTtl: LOGIN_TTL }),
   ]);
 
   const authorize = new URL('https://discord.com/oauth2/authorize');
@@ -74,10 +81,41 @@ export async function startAppDiscordLogin(env: Env): Promise<Response> {
       login_id: loginId,
       login_secret: loginSecret,
       authorize_url: authorize.toString(),
+      handoff_url: `https://api.copal.run/auth/device/${handoffCode}`,
       expires_at: expiresAt,
     },
     200
   );
+}
+
+export async function handleAppDiscordHandoff(req: Request, env: Env, code: string, proceed: boolean): Promise<Response> {
+  if (!/^[a-f0-9]{16}$/.test(code)) return json({ error: 'not_found' }, 404);
+  const loginId = await env.SERVERS.get(`app-login-code:${code}`);
+  const login = loginId ? pendingLogin(await env.SERVERS.get(`app-login:${loginId}`, 'json')) : null;
+  if (!login || login.handoff_code !== code || login.expires_at <= nowSec()) {
+    return json({ error: 'login_expired' }, 410);
+  }
+
+  const authorize = new URL('https://discord.com/oauth2/authorize');
+  authorize.searchParams.set('response_type', 'code');
+  authorize.searchParams.set('client_id', env.DISCORD_CLIENT_ID);
+  authorize.searchParams.set('scope', 'identify guilds.members.read');
+  authorize.searchParams.set('state', login.state);
+  authorize.searchParams.set('redirect_uri', APP_CALLBACK);
+  if (proceed) {
+    return new Response(null, { status: 302, headers: { location: authorize.toString(), 'cache-control': 'no-store' } });
+  }
+
+  const handoffUrl = `https://api.copal.run/auth/device/${code}`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aura remote sign-in</title><style>:root{color-scheme:dark;font-family:ui-sans-serif,system-ui;background:#090b10;color:#f4f5f7}main{width:min(520px,calc(100% - 32px));margin:12vh auto;padding:28px;border:1px solid #333b49;border-radius:24px;background:#11151d}h1{margin-top:0}p{color:#b8c0ce;line-height:1.55}code{display:block;overflow-wrap:anywhere;padding:14px;border-radius:12px;background:#090b10;color:#d9ff65}a{display:block;margin-top:20px;padding:13px 16px;text-align:center;border-radius:999px;background:#d9ff65;color:#090b10;text-decoration:none;font-weight:800}</style></head><body><main><h1>Use an unfiltered device</h1><p>This temporary Aura handoff expires in ten minutes. Open the address below on a phone or network that can reach Discord, then approve access there.</p><code>${handoffUrl}</code><a href="/auth/device/${code}/continue">Continue with Discord</a></main></body></html>`;
+  return new Response(html, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      'x-content-type-options': 'nosniff',
+    },
+  });
 }
 
 async function discordJson(url: string, accessToken: string): Promise<unknown> {
@@ -206,6 +244,7 @@ export async function pollAppDiscordLogin(req: Request, env: Env): Promise<Respo
     }),
     env.SERVERS.delete(key),
     env.SERVERS.delete(`app-oauth-state:${login.state}`),
+    ...(login.handoff_code ? [env.SERVERS.delete(`app-login-code:${login.handoff_code}`)] : []),
   ]);
   return json({ token, token_expires_at: tokenExpiresAt, account: publicAccount(account) }, 200);
 }

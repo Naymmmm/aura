@@ -34,8 +34,12 @@ Aura opens Discord OAuth in the browser → saves an Aura bearer token for 14 da
 `POST api.copal.run/v1/session` checks out rotating server credentials → generates
 the Naive + UoT config → sends it to `aura-core` over an authenticated loopback API →
 the already-privileged helper starts NaiveProxy and its embedded TUN/UoT v2 stack →
-live latency/traffic via Aura Core's API. Legacy account IDs and generated API
-tokens are no longer accepted.
+live latency/traffic via Aura Core's API. Filtered networks can hand Discord
+approval to another device, while legacy account IDs and generated API tokens
+remain available only under the app's secondary sign-in options.
+
+The server picker sends only the selected server to Aura Core. That server stays
+pinned until disconnect, so an active tunnel never swaps regions unexpectedly.
 
 The helper needs one administrator approval when first installed (and when the
 helper itself is upgraded), not on every connection. Closing Aura stops the
@@ -52,8 +56,9 @@ all direct artifact URLs require membership of the configured Aura Discord role.
 | macOS (Apple Silicon) | `https://api.copal.run/dl/latest-macos` |
 | Source | `https://api.copal.run/dl/source` |
 
-Tagged builds keep immutable Windows, macOS, and tracked-source ZIPs in the
-version archive. The three stable URLs above follow the newest published tag.
+Tagged builds keep immutable Windows ZIPs, macOS DMGs, and tracked-source ZIPs
+in the version archive. The three stable URLs above follow the newest published
+tag. Release versions use `year.minor.hotfix`, beginning with `26.0.1`.
 
 ### Discord authentication and bot setup
 
@@ -134,7 +139,7 @@ then continue with Discord in the app.
 - `prefer_ip` in the Worker KV payload switches the app to raw-IP connect if the domain ever gets DNS-poisoned.
 - Unsigned builds: Windows "More info → Run anyway", macOS right-click → Open.
 - Admin panel at `https://api.copal.run/admin`.
-- Tagged GitHub Actions builds publish the Windows and macOS ZIPs to both the
+- Tagged GitHub Actions builds publish the Windows ZIP and macOS DMG to both the
   GitHub Release and the Worker's R2-backed auto-update endpoints.
 
 ## License

@@ -191,6 +191,34 @@ describe('Discord-gated downloads', () => {
     });
   });
 
+  it('stores and serves the macOS release as a DMG', async () => {
+    const form = new FormData();
+    form.set('version', 'v26.0.1');
+    form.set('artifact', 'macos');
+    form.set('file', new File(['dmg-build'], 'aura-macos-arm64.dmg', {
+      type: 'application/x-apple-diskimage',
+    }));
+    const uploaded = await worker.fetch(
+      request('/v1/releases/publish', {
+        method: 'POST',
+        headers: { authorization: 'Bearer test-release-upload-token' },
+        body: form,
+      }),
+      env
+    );
+    const cookie = await downloadSessionCookie();
+    const downloaded = await worker.fetch(
+      request('/dl/latest-macos', { headers: { cookie } }),
+      env
+    );
+
+    expect(uploaded.status).toBe(200);
+    expect(await uploaded.json()).toMatchObject({ key: 'archive/v26.0.1/macos.dmg' });
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers.get('content-type')).toBe('application/x-apple-diskimage');
+    expect(downloaded.headers.get('content-disposition')).toContain('aura-v26.0.1-macos-arm64.dmg');
+  });
+
   it('archives historical releases without promoting them over the current version', async () => {
     await publishArtifact('v0.3.1', 'windows', 'current');
 

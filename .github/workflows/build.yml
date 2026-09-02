@@ -7,7 +7,7 @@ on:
 
 env:
   NAIVE_VERSION: 150.0.7871.63-1
-  FLUTTER_VERSION: 3.44.9
+  FLUTTER_VERSION: 3.44.6
 
 jobs:
   windows:
@@ -99,7 +99,7 @@ jobs:
           Copy-Item "aura-core\aura-core.exe" "$rel\aura-core\aura-core.exe" -Force
           Copy-Item "$env:NAIVE_DIR\naive.exe" "$rel\aura-core\naive.exe" -Force
           Copy-Item "$env:NAIVE_DIR\wintun.dll" "$rel\aura-core\wintun.dll" -Force
-          if (Get-ChildItem "$rel\aura-core" -Recurse | Where-Object Name -Match 'sing-box|singbox') { throw 'sing-box leaked into the 0.3.0 bundle' }
+          if (Get-ChildItem "$rel\aura-core" -Recurse | Where-Object Name -Match 'sing-box|singbox') { throw 'sing-box leaked into the release bundle' }
           Compress-Archive -Path "$rel\*" -DestinationPath aura-windows-amd64.zip
 
       - uses: actions/upload-artifact@v4
@@ -156,7 +156,7 @@ jobs:
         working-directory: aura-core
         run: go build -trimpath -ldflags "-s -w" -o aura-core .
 
-      - name: Bundle Aura Core + NaiveProxy + zip
+      - name: Bundle Aura Core + NaiveProxy + DMG
         run: |
           APP="app/build/macos/Build/Products/Release/aura.app"
           mkdir -p "$APP/Contents/MacOS/aura-core"
@@ -164,12 +164,16 @@ jobs:
           cp "$NAIVE_DIR"/naive "$APP/Contents/MacOS/aura-core/"
           ! find "$APP" -iname '*sing-box*' -o -iname '*singbox*' | grep -q .
           codesign --force --deep --sign - "$APP"
-          ditto -c -k --keepParent "$APP" aura-macos-arm64.zip
+          DMG_ROOT="$RUNNER_TEMP/aura-dmg"
+          mkdir -p "$DMG_ROOT"
+          cp -R "$APP" "$DMG_ROOT/Aura.app"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          hdiutil create -volname Aura -srcfolder "$DMG_ROOT" -ov -format UDZO aura-macos-arm64.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: aura-macos-arm64
-          path: aura-macos-arm64.zip
+          path: aura-macos-arm64.dmg
 
   release:
     needs: [windows, macos]
@@ -199,16 +203,18 @@ jobs:
           set -euo pipefail
           publish() {
             sha256="$(sha256sum "$2" | awk '{print $1}')"
+            content_type=application/zip
+            case "$2" in *.dmg) content_type=application/x-apple-diskimage ;; esac
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
               -F "version=${GITHUB_REF_NAME}" \
               -F "artifact=$1" \
               -F "sha256=${sha256}" \
-              -F "file=@$2;type=application/zip" \
+              -F "file=@$2;type=${content_type}" \
               https://api.copal.run/v1/releases/publish
           }
           publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
-          publish macos dist/aura-macos-arm64/aura-macos-arm64.zip
+          publish macos dist/aura-macos-arm64/aura-macos-arm64.dmg
           publish source aura-source.zip
 
       - name: Announce release in Discord
@@ -230,4 +236,5 @@ jobs:
           body_path: releases/${{ github.ref_name }}.md
           files: |
             dist/**/*.zip
+            dist/**/*.dmg
             aura-source.zip

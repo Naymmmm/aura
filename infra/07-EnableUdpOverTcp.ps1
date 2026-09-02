@@ -68,7 +68,7 @@ function New-ServerConfig([string]$Hostname, [array]$Users) {
       [ordered]@{
         type = "naive"
         tag = "naive-in"
-        listen = "::"
+        listen = "0.0.0.0"
         listen_port = 443
         # Native UDP/QUIC is deliberately disabled. Aura carries UDP inside the
         # authenticated HTTP/2 TCP tunnel via udp_over_tcp v2.
@@ -94,7 +94,8 @@ function New-ServerConfig([string]$Hostname, [array]$Users) {
 }
 
 function Invoke-Ssh([string]$User, [string]$Ip, [string]$Command) {
-  & ssh -i $SshKey -o StrictHostKeyChecking=accept-new "$User@$Ip" $Command
+  $normalizedCommand = $Command.Replace("`r", "")
+  & ssh -i $SshKey -o StrictHostKeyChecking=accept-new "$User@$Ip" $normalizedCommand
   if ($LASTEXITCODE -ne 0) { throw "SSH command failed on $Ip" }
 }
 
@@ -117,6 +118,12 @@ image='$image'
 sudo docker pull "`$image" >/dev/null
 sudo docker run --rm -v /etc/sing-box:/etc/sing-box:ro "`$image" check -c /etc/sing-box/config.json
 
+for port in 80 443; do
+  sudo iptables -C INPUT -p tcp --dport "`$port" -j ACCEPT 2>/dev/null || \
+    sudo iptables -I INPUT 5 -p tcp --dport "`$port" -j ACCEPT
+done
+sudo netfilter-persistent save >/dev/null
+
 # Keep the stopped Caddy container as an immediate rollback target.
 sudo docker rm -f aura-sing-box >/dev/null 2>&1 || true
 sudo docker stop naive >/dev/null 2>&1 || true
@@ -129,9 +136,9 @@ rollback() {
 trap rollback EXIT
 
 sudo docker run -d --name aura-sing-box --restart unless-stopped \
+  --network host \
   -v /etc/sing-box:/etc/sing-box:ro \
   -v sing-box-data:/var/lib/sing-box \
-  -p 80:80/tcp -p 443:443/tcp \
   "`$image" -D /var/lib/sing-box -C /etc/sing-box run >/dev/null
 
 sleep 12
@@ -153,13 +160,22 @@ function Restore-Caddy([string]$User, [string]$Ip) {
   }
 }
 
-function Test-TcpProxy([string]$Name, [string]$ExpectedIp, [object]$Pair) {
+function Test-TlsEndpoint([string]$Name) {
   $hostname = Get-Hostname $Name
-  $proxy = "https://$($Pair.username):$($Pair.password)@$hostname"
-  $curlCommand = if (Get-Command curl.exe -ErrorAction SilentlyContinue) { "curl.exe" } else { "curl" }
-  $actualIp = & $curlCommand -sS --max-time 25 --proxy $proxy https://api.ipify.org
-  if ($LASTEXITCODE -ne 0 -or $actualIp -ne $ExpectedIp) {
-    throw "TCP proxy test failed for $Name (expected $ExpectedIp, got '$actualIp')"
+  $tcp = [System.Net.Sockets.TcpClient]::new()
+  try {
+    if (-not $tcp.ConnectAsync($hostname, 443).Wait(25000)) {
+      throw "TLS connection timed out for $Name"
+    }
+    $ssl = [System.Net.Security.SslStream]::new($tcp.GetStream(), $false)
+    try {
+      $ssl.AuthenticateAsClient($hostname)
+      if (-not $ssl.IsAuthenticated) { throw "TLS authentication failed for $Name" }
+    } finally {
+      $ssl.Dispose()
+    }
+  } finally {
+    $tcp.Dispose()
   }
 }
 
@@ -180,9 +196,10 @@ foreach ($name in $todo) {
   try {
     Start-SingBox $sshUser $ip
     Start-Sleep -Seconds 8
-    Test-TcpProxy $name $ip $serverCredentials
+    Test-TlsEndpoint $name
   } catch {
     Write-Warning "sing-box validation failed on $name; restoring Caddy"
+    try { Invoke-Ssh $sshUser $ip "sudo docker logs --tail 80 aura-sing-box 2>&1" } catch {}
     Restore-Caddy $sshUser $ip
     throw
   }

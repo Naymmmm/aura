@@ -7,6 +7,7 @@ import '../state/app_state.dart';
 import '../ui/aura_lines.dart';
 import 'logs_page.dart';
 import 'server_tile.dart';
+import 'aura_mark.dart';
 
 /// Main screen: big connect button, meme status, server list, live stats.
 class HomePage extends StatelessWidget {
@@ -44,6 +45,15 @@ class HomePage extends StatelessWidget {
                         Row(
                           children: [
                             Text('servers', style: theme.textTheme.titleMedium),
+                            const SizedBox(width: 8),
+                            Text(
+                              state.phase == VpnPhase.connected
+                                  ? 'locked while connected'
+                                  : 'choose one',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
                             const Spacer(),
                             IconButton(
                               tooltip: 'refresh config (bypasses cache)',
@@ -74,7 +84,11 @@ class HomePage extends StatelessWidget {
                                 server: s,
                                 latencyMs: state.latencies[s.tag],
                                 isActive: state.activeServer == s.tag,
-                                isSelected: state.activeServer == null,
+                                isSelected: state.selectedServerTag == s.tag,
+                                locked:
+                                    state.phase == VpnPhase.connected ||
+                                    state.phase == VpnPhase.connecting,
+                                onTap: () => state.selectServer(s.tag),
                               ),
                             ),
                           ),
@@ -103,14 +117,14 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
       child: Row(
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.asset(
-              'assets/tray/tray.png',
-              width: 40,
-              height: 40,
-              fit: BoxFit.fill,
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary,
+              borderRadius: BorderRadius.circular(13),
             ),
+            child: AuraMark(size: 28, color: theme.colorScheme.onPrimary),
           ),
           const SizedBox(width: 10),
           Column(
@@ -124,7 +138,7 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                '(v0.3.1)',
+                '(v26.0.1)',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                   letterSpacing: 1.1,
@@ -435,10 +449,10 @@ class _UpdateChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
-        onTap: () {
+        onTap: () async {
           if (updating) return;
           if (staged) {
-            state.installUpdate();
+            await state.installUpdate();
             // The updater script waits for this process to die, swaps the
             // files and relaunches the new build.
             exit(0);

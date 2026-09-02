@@ -1,5 +1,16 @@
 # Changelog
 
+## 26.0.1
+
+- Adopted `year.minor.hotfix` release versions.
+- Added remote Discord authorization handoff for filtered networks and restored
+  legacy credentials behind the secondary sign-in options.
+- Added explicit server selection and pinned the chosen server while connected.
+- Enabled native IPv6 egress across the Aura server pool and future replacements.
+- Reworked the desktop UI, app/tray icons, and searchable structured diagnostics.
+- Replaced the macOS ZIP with a DMG and a checksum-verified AppleScript updater
+  that installs, relaunches, and posts a completion notification.
+
 ## 0.3.2
 
 - Restored Chromium HTTP/3 and QUIC traffic over the encrypted UoT v2 tunnel
