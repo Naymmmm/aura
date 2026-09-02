@@ -1,0 +1,91 @@
+name: publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing tag to publish, for example v26.0.1
+        required: true
+        type: string
+      source_run_id:
+        description: Completed build run that produced the Windows and macOS artifacts
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aura-windows-amd64
+          path: dist/aura-windows-amd64
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aura-macos-arm64
+          path: dist/aura-macos-arm64
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate release changelog
+        run: node worker/scripts/validate-release-changelog.mjs "releases/${{ inputs.version }}.md" "${{ inputs.version }}"
+
+      - name: Build source archive
+        run: git archive --format=zip --prefix="aura-${{ inputs.version }}/" --output aura-source.zip HEAD
+
+      - name: Publish version archive to Aura
+        env:
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          publish() {
+            sha256="$(sha256sum "$2" | awk '{print $1}')"
+            content_type=application/zip
+            case "$2" in *.dmg) content_type=application/x-apple-diskimage ;; esac
+            curl --fail-with-body --retry 3 --retry-all-errors \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${{ inputs.version }}" \
+              -F "artifact=$1" \
+              -F "sha256=${sha256}" \
+              -F "file=@$2;type=${content_type}" \
+              https://api.copal.run/v1/releases/publish
+          }
+          publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
+          publish macos dist/aura-macos-arm64/aura-macos-arm64.dmg
+          publish source aura-source.zip
+
+      - name: Announce release in Discord
+        env:
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          jq -n \
+            --arg version "${{ inputs.version }}" \
+            --rawfile changelog "releases/${{ inputs.version }}.md" \
+            '{version: $version, changelog: $changelog}' > release-announcement.json
+          curl --fail-with-body --retry 3 --retry-all-errors \
+            -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @release-announcement.json \
+            https://api.copal.run/v1/releases/announce
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          body_path: releases/${{ inputs.version }}.md
+          files: |
+            dist/**/*.zip
+            dist/**/*.dmg
+            aura-source.zip

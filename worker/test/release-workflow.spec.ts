@@ -6,6 +6,7 @@ import newServers from '../../infra/03-NewServers.ps1?raw';
 import remakeServers from '../../infra/03b-Remake.ps1?raw';
 import serverUserData from '../../infra/user-data.yaml?raw';
 import udpServerMigration from '../../infra/07-EnableUdpOverTcp.ps1?raw';
+import publishRelease from '../../.github/workflows/publish-release.yml?raw';
 
 describe('release workflow', () => {
   it('builds tracked source and publishes every artifact to the version archive', () => {
@@ -52,6 +53,13 @@ describe('release workflow', () => {
     expect(udpServerMigration).toContain('netfilter-persistent save');
     expect(udpServerMigration).toContain('SslStream');
     expect(udpServerMigration).not.toContain('--proxy $proxy');
+  });
+
+  it('can publish a release from artifacts built by an earlier workflow run', () => {
+    expect(publishRelease).toContain('workflow_dispatch:');
+    expect(publishRelease).toContain('source_run_id:');
+    expect(publishRelease).toContain('run-id: ${{ inputs.source_run_id }}');
+    expect(publishRelease).toContain('/v1/releases/announce');
   });
 
   it('backfills every historical binary and generated source without leaving an old release as latest', () => {
