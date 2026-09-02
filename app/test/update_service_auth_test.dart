@@ -64,6 +64,15 @@ void main() {
 
     await service.stage('v9.9.9', authToken: 'aura_saved_token');
 
+    if (Platform.isMacOS) {
+      final metadata = jsonDecode(
+        await File('${temp.path}${Platform.pathSeparator}mac-update.json')
+            .readAsString(),
+      ) as Map<String, dynamic>;
+      expect(metadata['auth_token'], 'aura_saved_token');
+      return;
+    }
+
     expect(
       await File('${temp.path}${Platform.pathSeparator}aura.exe').readAsBytes(),
       [1, 2, 3],
