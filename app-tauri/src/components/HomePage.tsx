@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { toast } from "sonner";
 import { AuraMark } from "@/components/AuraMark";
 import { ServerTile } from "@/components/ServerTile";
@@ -76,7 +76,7 @@ const phaseStyle: Record<Phase, { color: string; icon: React.ReactNode; line: st
   },
 };
 
-export function HomePage({ aura, onOpenLogs }: { aura: Aura; onOpenLogs: () => void }) {
+export function HomePage({ aura, onOpenLogs, onDebug }: { aura: Aura; onOpenLogs: () => void; onDebug: () => void }) {
   const { phase, serverConfig, selectedServerTag, activeServer, latencies } = aura;
   const busy = phase === "connecting" || phase === "fetchingConfig";
   const isConnected = phase === "connected";
@@ -101,7 +101,7 @@ export function HomePage({ aura, onOpenLogs }: { aura: Aura; onOpenLogs: () => v
 
   return (
     <div className="flex h-screen flex-col bg-background">
-      <Header aura={aura} onOpenLogs={onOpenLogs} onOpenSettings={() => setSettingsOpen(true)} />
+      <Header aura={aura} onOpenLogs={onOpenLogs} onOpenSettings={() => setSettingsOpen(true)} onDebug={onDebug} />
 
       <div className="flex-1 overflow-y-auto px-5 pb-6">
         <StatusCard aura={aura} busy={busy} isConnected={isConnected} status={status} />
@@ -183,17 +183,32 @@ function Header({
   aura,
   onOpenLogs,
   onOpenSettings,
+  onDebug,
 }: {
   aura: Aura;
   onOpenLogs: () => void;
   onOpenSettings: () => void;
+  onDebug: () => void;
 }) {
   const account = aura.accountStatus;
+  const logoClicks = useRef(0);
+  const pressLogo = () => {
+    logoClicks.current += 1;
+    if (logoClicks.current >= 5) {
+      logoClicks.current = 0;
+      onDebug();
+    }
+  };
   return (
     <div className="flex items-center gap-2.5 px-5 pb-2 pt-4">
-      <div className="flex size-10 items-center justify-center rounded-[13px] bg-primary">
+      <button
+        type="button"
+        onClick={pressLogo}
+        className="flex size-10 items-center justify-center rounded-[13px] bg-primary"
+        title="Aura"
+      >
         <AuraMark size={28} color="var(--primary-foreground)" />
-      </div>
+      </button>
       <div className="leading-tight">
         <p className="text-base font-black tracking-[0.22em]">AURA</p>
         <p className="text-[10px] font-bold tracking-[0.12em] text-muted-foreground">(v26.1.0)</p>

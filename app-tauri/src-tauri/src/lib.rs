@@ -35,38 +35,38 @@ fn app_meta() -> AppMeta {
 
 #[tauri::command]
 async fn auth_start() -> Result<AuthStart, String> {
-    api::auth_start().await.map_err(|e| e.kind.as_str().to_string())
+    api::auth_start().await.map_err(|e| e.command_str())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn auth_poll(login_id: String, login_secret: String) -> Result<AuthPoll, String> {
     api::auth_poll(&login_id, &login_secret)
         .await
-        .map_err(|e| e.kind.as_str().to_string())
+        .map_err(|e| e.command_str())
 }
 
 #[tauri::command]
 async fn open_browser(url: String) -> Result<(), String> {
-    api::open_browser(&url).await.map_err(|e| e.kind.as_str().to_string())
+    api::open_browser(&url).await.map_err(|e| e.command_str())
 }
 
 #[tauri::command]
 async fn open_session(token: String) -> Result<SessionInfo, String> {
-    api::open_session(&token).await.map_err(|e| e.kind.as_str().to_string())
+    api::open_session(&token).await.map_err(|e| e.command_str())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn legacy_session(account_id: String, token: String) -> Result<SessionInfo, String> {
     api::legacy_session(&account_id, &token)
         .await
-        .map_err(|e| e.kind.as_str().to_string())
+        .map_err(|e| e.command_str())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn heartbeat(session_id: String, delta: i64) -> Result<bool, String> {
     api::heartbeat(&session_id, delta)
         .await
-        .map_err(|e| e.kind.as_str().to_string())
+        .map_err(|e| e.command_str())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -78,7 +78,7 @@ async fn close_session(session_id: String) {
 async fn check_update() -> Result<Option<String>, String> {
     api::check_update(api::platform_key())
         .await
-        .map_err(|e| e.kind.as_str().to_string())
+        .map_err(|e| e.command_str())
 }
 
 // ---- Simulated aura-core helper (ports AuraCoreManager) ---------------------

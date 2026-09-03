@@ -3,6 +3,35 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+// ---- last-error capture (for the debug overlay) -----------------------------
+let lastApiError: string | null = null;
+type ErrorListener = (e: string | null) => void;
+const errorListeners = new Set<ErrorListener>();
+
+export function onApiError(cb: ErrorListener): () => void {
+  errorListeners.add(cb);
+  return () => errorListeners.delete(cb);
+}
+
+export function getLastApiError(): string | null {
+  return lastApiError;
+}
+
+function recordApiError(e: unknown) {
+  lastApiError = typeof e === "string" ? e : String(e);
+  errorListeners.forEach((cb) => cb(lastApiError));
+}
+
+/** Thin wrapper so every failed invoke is recorded for the debug overlay. */
+async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    recordApiError(e);
+    throw e;
+  }
+}
+
 export type AuthErrorKind =
   | "badCreds"
   | "accountExpired"
@@ -85,22 +114,22 @@ export interface CoreStats {
 }
 
 export const appMeta = () =>
-  invoke<{ version: string; api_base: string }>("app_meta");
+  call<{ version: string; api_base: string }>("app_meta");
 
-export const authStart = () => invoke<AuthStart>("auth_start");
+export const authStart = () => call<AuthStart>("auth_start");
 export const authPoll = (loginId: string, loginSecret: string) =>
-  invoke<AuthPoll>("auth_poll", { login_id: loginId, login_secret: loginSecret });
-export const openBrowser = (url: string) => invoke<void>("open_browser", { url });
+  call<AuthPoll>("auth_poll", { login_id: loginId, login_secret: loginSecret });
+export const openBrowser = (url: string) => call<void>("open_browser", { url });
 
 export const openSession = (token: string) =>
-  invoke<SessionInfo>("open_session", { token });
+  call<SessionInfo>("open_session", { token });
 export const legacySession = (accountId: string, token: string) =>
-  invoke<SessionInfo>("legacy_session", { account_id: accountId, token });
+  call<SessionInfo>("legacy_session", { account_id: accountId, token });
 export const heartbeat = (sessionId: string, delta = 0) =>
-  invoke<boolean>("heartbeat", { session_id: sessionId, delta });
+  call<boolean>("heartbeat", { session_id: sessionId, delta });
 export const closeSession = (sessionId: string) =>
-  invoke<void>("close_session", { session_id: sessionId });
-export const checkUpdate = () => invoke<string | null>("check_update");
+  call<void>("close_session", { session_id: sessionId });
+export const checkUpdate = () => call<string | null>("check_update");
 
 export const coreStart = (
   auto: boolean,
@@ -110,7 +139,7 @@ export const coreStart = (
   killSwitch: boolean,
   exceptions: string[],
 ) =>
-  invoke<string>("core_start", {
+  call<string>("core_start", {
     auto,
     selected,
     servers,
@@ -118,15 +147,15 @@ export const coreStart = (
     kill_switch: killSwitch,
     exceptions,
   });
-export const coreStop = () => invoke<boolean>("core_stop");
-export const coreStatus = () => invoke<CoreStatus>("core_status");
-export const coreStats = () => invoke<CoreStats>("core_stats");
-export const coreLog = () => invoke<string>("core_log");
+export const coreStop = () => call<boolean>("core_stop");
+export const coreStatus = () => call<CoreStatus>("core_status");
+export const coreStats = () => call<CoreStats>("core_stats");
+export const coreLog = () => call<string>("core_log");
 
 export const usageMonthUsed = (accountId: string) =>
-  invoke<number>("usage_month_used", { account_id: accountId });
+  call<number>("usage_month_used", { account_id: accountId });
 export const usageAdd = (accountId: string, delta: number) =>
-  invoke<void>("usage_add", { account_id: accountId, delta });
+  call<void>("usage_add", { account_id: accountId, delta });
 
 export type AuthMode = "discord" | "legacy";
 

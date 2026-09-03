@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -22,7 +22,15 @@ import {
   EyeOff,
 } from "lucide-react";
 
-export function LoginView({ aura }: { aura: Aura }) {
+export function LoginView({ aura, onDebug }: { aura: Aura; onDebug: () => void }) {
+  const logoClicks = useRef(0);
+  const pressLogo = () => {
+    logoClicks.current += 1;
+    if (logoClicks.current >= 5) {
+      logoClicks.current = 0;
+      onDebug();
+    }
+  };
   const [busy, setBusy] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [accountId, setAccountId] = useState("");
@@ -69,9 +77,14 @@ export function LoginView({ aura }: { aura: Aura }) {
     <div className="flex min-h-screen w-full items-center justify-center bg-background px-6 py-10">
       <Card className="w-full max-w-md border-border shadow-2xl">
         <CardHeader className="items-center justify-items-center gap-2 text-center">
-          <div className="flex h-16 w-16 items-center justify-center justify-self-center rounded-2xl bg-primary">
+          <button
+            type="button"
+            onClick={pressLogo}
+            className="flex h-16 w-16 items-center justify-center justify-self-center rounded-2xl bg-primary"
+            title="Aura"
+          >
             <AuraMark size={42} color="var(--primary-foreground)" />
-          </div>
+          </button>
           <CardTitle className="text-2xl font-black tracking-[0.35em]">
             AURA
           </CardTitle>

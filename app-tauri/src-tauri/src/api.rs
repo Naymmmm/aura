@@ -33,6 +33,16 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// Bridge string for a Tauri command error. Auth kinds stay as their exact
+    /// kind so the UI can map them; network errors keep the underlying cause.
+    pub fn command_str(&self) -> String {
+        if self.kind == AuthErrorKind::Network {
+            format!("network: {}", self.message)
+        } else {
+            self.kind.as_str().to_string()
+        }
+    }
 }
 
 fn client() -> Result<Client, ApiError> {
