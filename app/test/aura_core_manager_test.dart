@@ -22,7 +22,15 @@ void main() {
       final remove = script.indexOf('Remove-Item -Recurse -Force');
       expect(stop, greaterThan(-1));
       expect(remove, greaterThan(stop));
-      expect(script, contains(r"$_.Path -eq $installedCore"));
+      // 26.2.0: kill every aura-core process, wait for it to exit, retry the swap.
+      expect(
+        script,
+        contains(
+          r"Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Force",
+        ),
+      );
+      expect(script, contains(r'$auraStopDeadline'));
+      expect(script, contains(r'$auraCleared'));
     },
   );
 
