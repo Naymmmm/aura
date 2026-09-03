@@ -20,6 +20,11 @@ id = "ae43f700dc294f62ab98b42b82f7b12d"
 binding = "RELEASES"
 bucket_name = "aura-releases"
 
+[assets]
+directory = "./ui/dist"
+binding = "ASSETS"
+run_worker_first = true
+
 [observability]
 enabled = true
 

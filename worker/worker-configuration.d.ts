@@ -17,6 +17,7 @@ interface __BaseEnv_Env {
 	DISCORD_RELEASE_CHANNEL_ID: string;
 	DOWNLOAD_SESSION_SECRET: string;
 	RELEASE_UPLOAD_TOKEN: string;
+	ASSETS: Fetcher;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

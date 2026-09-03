@@ -15,7 +15,7 @@ import { json, HDRS, safeEqual } from './util';
 import { authenticateLegacyCredentials, handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
-import { serveDownload, serveArchivePage, serveReleaseMeta } from './releases';
+import { serveDownload, serveArchiveAPI, serveReleaseMeta } from './releases';
 import { handleCiRelease, handleCiReleaseAnnouncement } from './releases';
 import {
   handleDiscordCallback,
@@ -32,6 +32,7 @@ export default {
     const url = new URL(req.url);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: HDRS });
     if (url.pathname === '/healthz') return new Response('ok');
+    if (url.pathname.startsWith('/assets/')) return env.ASSETS.fetch(req);
     if (url.pathname === '/v1/config') return serveConfig(req, env);
 
     if (url.pathname === '/v1/auth/discord/start') {
@@ -79,14 +80,19 @@ export default {
     if (url.pathname === '/auth/discord/login') return handleDiscordLogin(req, env);
     if (url.pathname === '/auth/discord/callback') return handleDiscordCallback(req, env);
 
-    if (url.pathname === '/downloads') {
-      // Legacy name
+    if (url.pathname === '/downloads' || url.pathname === '/') {
+      // Legacy name / site root
       return Response.redirect(`${url.origin}/archive`, 308);
     }
     if (url.pathname === '/archive') {
       const access = await downloadAccess(req, env);
       if (!access.authenticated) return loginRedirect('/archive');
-      return serveArchivePage(env, access.canDownloadSource);
+      return env.ASSETS.fetch(new URL('/index.html', req.url));
+    }
+    if (url.pathname === '/v1/archive') {
+      const access = await downloadAccess(req, env);
+      if (!access.authenticated) return json({ error: 'unauthorized' }, 401);
+      return serveArchiveAPI(env, access.canDownloadSource);
     }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);

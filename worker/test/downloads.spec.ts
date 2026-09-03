@@ -309,39 +309,41 @@ describe('Discord-gated downloads', () => {
     expect(await response.json()).toEqual({ error: 'release_incomplete' });
   });
 
-  it('renders the version archive for an authorized Discord member', async () => {
+  it('returns the version archive data for an authorized Discord member', async () => {
     await publishArtifact('v0.4.0', 'windows', 'windows-v4');
     await publishArtifact('v0.4.0', 'source', 'source-v4');
     const cookie = await downloadSessionCookie('standard');
 
-    const response = await worker.fetch(request('/archive', { headers: { cookie } }), env);
-    const html = await response.text();
+    const response = await worker.fetch(request('/v1/archive', { headers: { cookie } }), env);
+    const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(response.headers.get('content-type')).toContain('text/html');
-    expect(html).toContain('Version Archive');
-    expect(html).toContain('data-channel="stable"');
-    expect(html).toContain('data-channel="dev"');
-    expect(html).toContain('v0.4.0');
-    expect(html).toContain('/dl/archive/v0.4.0/windows.zip');
-    expect(html).toContain('/dl/archive/v0.4.0/source.zip');
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(body.canDownloadSource).toBe(true);
+    const release = body.stable.find((v: { version: string }) => v.version === 'v0.4.0');
+    expect(release).toBeDefined();
+    expect(release.artifacts.windows.key).toBe('archive/v0.4.0/windows.zip');
+    expect(release.artifacts.source.key).toBe('archive/v0.4.0/source.zip');
+    expect(Array.isArray(body.dev)).toBe(true);
   });
 
-  it('hides source archives from free-trial members', async () => {
+  it('marks free-trial members so clients hide source archives', async () => {
     await publishArtifact('v0.4.1', 'windows', 'windows-v41');
     await publishArtifact('v0.4.1', 'source', 'source-v41');
     const cookie = await downloadSessionCookie('free_trial');
 
-    const response = await worker.fetch(request('/archive', { headers: { cookie } }), env);
-    const html = await response.text();
+    const response = await worker.fetch(request('/v1/archive', { headers: { cookie } }), env);
+    const body = await response.json();
     const directSource = await worker.fetch(
       request('/dl/archive/v0.4.1/source.zip', { headers: { cookie } }),
       env
     );
 
     expect(response.status).toBe(200);
-    expect(html).toContain('/dl/archive/v0.4.1/windows.zip');
-    expect(html).not.toContain('/dl/archive/v0.4.1/source.zip');
+    expect(body.canDownloadSource).toBe(false);
+    const release = body.stable.find((v: { version: string }) => v.version === 'v0.4.1');
+    expect(release).toBeDefined();
+    expect(release.artifacts.windows.key).toBe('archive/v0.4.1/windows.zip');
     expect(directSource.status).toBe(403);
     expect(await directSource.json()).toEqual({ error: 'standard_required' });
   });
@@ -553,14 +555,12 @@ describe('Discord-gated downloads', () => {
     );
 
     const cookie = await downloadSessionCookie('standard');
-    const html = await (await worker.fetch(request('/archive', { headers: { cookie } }), env)).text();
-    const stableStart = html.indexOf('class="channel" data-channel="stable"');
-    const devStart = html.indexOf('class="channel" data-channel="dev"');
-    const stableSection = html.slice(stableStart, devStart);
-    const devSection = html.slice(devStart);
+    const response = await worker.fetch(request('/v1/archive', { headers: { cookie } }), env);
+    const body = await response.json();
 
-    expect(stableSection).toContain('v26.0.1');
-    expect(stableSection).not.toContain('v26.0.1-dev.9');
-    expect(devSection).toContain('v26.0.1-dev.9');
+    expect(body.stable[0].version).toBe('v26.0.1');
+    expect(body.stable.some((v: { version: string }) => v.version === 'v26.0.1-dev.9')).toBe(false);
+    expect(body.dev[0].version).toBe('v26.0.1-dev.9');
+    expect(body.dev.some((v: { version: string }) => v.version === 'v26.0.1')).toBe(false);
   });
 });
