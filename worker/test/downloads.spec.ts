@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
+import { handleRelease } from '../src/releases';
 
 function request(path: string, init?: RequestInit): Request {
   return new Request(`https://api.copal.run${path}`, init);
@@ -476,5 +477,59 @@ describe('Discord-gated downloads', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid_oauth_state' });
+  });
+
+  it('keeps dev builds below their stable base in the archive', async () => {
+    await publishArtifact('v26.0.1', 'windows', 'stable-windows');
+
+    const dev = new FormData();
+    dev.set('version', 'v26.0.1-dev.5');
+    dev.set('artifact', 'windows');
+    dev.set('promote', 'false');
+    dev.set('file', new File(['dev-windows'], 'dev-windows.zip', { type: 'application/zip' }));
+    const response = await worker.fetch(
+      request('/v1/releases/publish', {
+        method: 'POST',
+        headers: { authorization: 'Bearer test-release-upload-token' },
+        body: dev,
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await (await env.RELEASES.get('meta:latest'))!.json()).toMatchObject({ version: 'v26.0.1' });
+    const index = await (await env.RELEASES.get('archive/index.json'))!.json<{
+      versions: Array<{ version: string }>;
+    }>();
+    const versions = index.versions.map((entry) => entry.version);
+    expect(versions.indexOf('v26.0.1')).toBeLessThan(versions.indexOf('v26.0.1-dev.5'));
+  });
+
+  it('stores and serves a legacy admin-uploaded macOS DMG as a DMG', async () => {
+    const form = new FormData();
+    form.set('key', 'latest-macos');
+    form.set('version', 'v26.0.2');
+    form.set('file', new File(['dmg-body'], 'aura-macos-arm64.dmg', {
+      type: 'application/x-apple-diskimage',
+    }));
+    const uploaded = await handleRelease(
+      request('/v1/admin/release', { method: 'POST', body: form }),
+      env
+    );
+
+    expect(uploaded.status).toBe(200);
+    expect(await (await env.RELEASES.get('meta:latest-macos'))!.json()).toMatchObject({ type: 'dmg' });
+
+    const backedUp = await env.RELEASES.list({ prefix: 'aura-' });
+    expect(backedUp.objects.some((o) => o.key.endsWith('latest-macos.dmg'))).toBe(true);
+
+    const cookie = await downloadSessionCookie();
+    const downloaded = await worker.fetch(
+      request('/dl/latest-macos', { headers: { cookie } }),
+      env
+    );
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers.get('content-type')).toBe('application/x-apple-diskimage');
+    expect(downloaded.headers.get('content-disposition')).toContain('aura-macos-arm64.dmg');
   });
 });

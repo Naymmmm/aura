@@ -23,15 +23,19 @@ export async function handleRelease(req: Request, env: Env): Promise<Response> {
   const rawVersion = String(fd.get('version') ?? '');
   const version = /^[A-Za-z0-9._-]{1,32}$/.test(rawVersion) ? rawVersion : stampNow();
 
+  const extension = file.name.toLowerCase().endsWith('.dmg') ? 'dmg' : 'zip';
   await env.RELEASES.put(key, file);
-  await env.RELEASES.put(key === 'latest' ? 'aura-' + stampNow() + '.zip' : `aura-${stampNow()}-${key}.zip`, file);
+  await env.RELEASES.put(
+    key === 'latest' ? `aura-${stampNow()}.zip` : `aura-${stampNow()}-${key}.${extension}`,
+    file
+  );
 
   // sha256 computed here (once per upload) so the app can verify downloads.
   const hash = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
   const sha256 = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
   await env.RELEASES.put(
     'meta:' + key,
-    JSON.stringify({ version, sha256, size: file.size, uploaded: Date.now() })
+    JSON.stringify({ version, sha256, size: file.size, uploaded: Date.now(), type: extension })
   );
 
   // keep only the newest 5 versioned copies
@@ -303,13 +307,28 @@ async function updateArchiveIndex(bucket: R2Bucket, manifest: ArchiveManifest): 
 }
 
 function compareVersionsDescending(a: string, b: string): number {
-  const aParts = a.replace(/^v/, '').split(/[.-]/).slice(0, 3).map(Number);
-  const bParts = b.replace(/^v/, '').split(/[.-]/).slice(0, 3).map(Number);
+  const aParsed = parseReleaseVersion(a);
+  const bParsed = parseReleaseVersion(b);
   for (let i = 0; i < 3; i++) {
-    const difference = (bParts[i] || 0) - (aParts[i] || 0);
+    const difference = (bParsed.nums[i] || 0) - (aParsed.nums[i] || 0);
     if (difference) return difference;
   }
+  // A stable build outranks any prerelease of the same version, so dev builds
+  // (published as vX.Y.Z-dev.N) stay below their stable base on the downloads
+  // page instead of being shown as the latest release.
+  if (aParsed.pre && !bParsed.pre) return 1;
+  if (!aParsed.pre && bParsed.pre) return -1;
+  if (aParsed.pre && bParsed.pre) return bParsed.pre.localeCompare(aParsed.pre);
   return b.localeCompare(a);
+}
+
+function parseReleaseVersion(value: string): { nums: number[]; pre: string } {
+  const match = value.match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-.]([A-Za-z0-9.-]+))?$/);
+  if (!match) return { nums: [0, 0, 0], pre: '' };
+  return {
+    nums: [Number(match[1]), Number(match[2]), Number(match[3])],
+    pre: match[4] ?? '',
+  };
 }
 
 export async function serveDownloadPage(env: Env, canDownloadSource: boolean): Promise<Response> {
@@ -398,6 +417,7 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
   const canonical = /^(latest|latest-macos|source)$/.test(key);
   if (!canonical && !ARCHIVE_KEY_RE.test(key)) return json({ error: 'not found' }, 404);
   let objectKey = key;
+  let legacyType: string | undefined;
   if (canonical) {
     const metadata = await env.RELEASES.get(`meta:${key}`);
     if (metadata) {
@@ -412,6 +432,14 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
         ) {
           objectKey = value.target;
         }
+        if (
+          value &&
+          typeof value === 'object' &&
+          'type' in value &&
+          typeof value.type === 'string'
+        ) {
+          legacyType = value.type;
+        }
       } catch {
         // Legacy uploads have no target; fall back to the stable object below.
       }
@@ -421,10 +449,10 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
   const obj = range ? await env.RELEASES.get(objectKey, { range }) : await env.RELEASES.get(objectKey);
   if (!obj) return json({ error: 'not found' }, 404);
 
-  const isDmg = objectKey.endsWith('.dmg');
+  const isDmg = objectKey.endsWith('.dmg') || legacyType === 'dmg';
   const headers: Record<string, string> = {
     'content-type': isDmg ? 'application/x-apple-diskimage' : 'application/zip',
-    'content-disposition': `attachment; filename="${dlName(objectKey, key)}"`,
+    'content-disposition': `attachment; filename="${dlName(objectKey, key, isDmg)}"`,
     etag: obj.etag,
     'accept-ranges': 'bytes',
     'cache-control': 'private, no-store',
@@ -452,16 +480,14 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
   });
 }
 
-function dlName(objectKey: string, requestedKey: string): string {
+function dlName(objectKey: string, requestedKey: string, isDmg: boolean): string {
   const match = objectKey.match(/^archive\/(v[^/]+)\/(windows|macos|source)\.(zip|dmg)$/);
   if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1], match[3] as 'zip' | 'dmg');
   if (requestedKey === 'latest') return 'aura-windows-amd64.zip';
-  if (requestedKey === 'latest-macos') return isDmgKey(objectKey) ? 'aura-macos-arm64.dmg' : 'aura-macos-arm64.zip';
+  if (requestedKey === 'latest-macos') return isDmg ? 'aura-macos-arm64.dmg' : 'aura-macos-arm64.zip';
   if (requestedKey === 'source') return 'aura-source.zip';
   return 'aura-release.zip';
 }
-
-function isDmgKey(value: string): boolean { return value.endsWith('.dmg'); }
 
 // bytes=start-end | bytes=start-  (single range only; others ignored → full 200)
 function parseRange(h: string | null): { offset: number; length: number } | { offset: number } | null {
