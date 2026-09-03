@@ -13,7 +13,7 @@ import 'package:path_provider/path_provider.dart';
 class AuraCoreManager {
   AuraCoreManager._();
 
-  static const version = '26.1.0';
+  static const version = '26.2.0';
   static const _port = 45873;
   static String? _dir;
   static String? _token;
@@ -315,10 +315,24 @@ Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Silent
 New-Item -ItemType Directory -Force -Path $install | Out-Null
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 & icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue |
-  Where-Object { $_.Path -eq $installedCore } |
-  Stop-Process -Force
-Get-ChildItem $install -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Force
+# Stop-Process returns immediately while Windows may still hold the exe;
+# wait for the helper to fully exit before touching the install folder.
+$auraStopDeadline = (Get-Date).AddSeconds(20)
+while ((Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $auraStopDeadline) {
+  Start-Sleep -Milliseconds 300
+}
+# The exe can stay briefly locked after exit; retry the removal before giving up.
+$auraCleared = $false
+for ($i = 0; $i -lt 5 -and -not $auraCleared; $i++) {
+  try {
+    Get-ChildItem $install -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction Stop
+    $auraCleared = $true
+  } catch {
+    Start-Sleep -Milliseconds 500
+  }
+}
+if (-not $auraCleared) { throw 'could not clear $install after stopping the Aura helper' }
 Copy-Item (Join-Path $source '*') $install -Recurse -Force
 $token = Join-Path $state 'api.token'
 $arguments = 'serve --state-dir "' + $runtime + '" --token-file "' + $token + '"'

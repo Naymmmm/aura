@@ -67,6 +67,8 @@ class AuraLines {
         return pick(accountDisabled);
       case AuthErrorKind.noCredit:
         return pick(noCredit);
+      case AuthErrorKind.budgetExceeded:
+        return pick(budgetOver);
       case AuthErrorKind.poolExhausted:
         return pick(poolExhausted);
       case AuthErrorKind.sessionGone:

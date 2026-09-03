@@ -73,6 +73,7 @@ class AppState extends ChangeNotifier {
   int _budgetBytes = 0; // 0 = no budget configured (config not loaded yet)
   int _monthUsed = 0;
   int _pendingUsage = 0;
+  int _reportSince = 0; // bytes since the last heartbeat (reported to the Worker)
   int _pollTick = 0;
   int _prevUp = 0;
   int _prevDown = 0;
@@ -500,7 +501,11 @@ class AppState extends ChangeNotifier {
     _heartbeatTimer?.cancel();
     final sid = _session!.sessionId;
     _heartbeatTimer = Timer.periodic(const Duration(minutes: 10), (_) async {
-      final ok = await _sessionService.heartbeat(sid);
+      // Report the bytes used since the last heartbeat so the Worker can
+      // enforce the monthly budget server-side.
+      final delta = _reportSince;
+      _reportSince = 0;
+      final ok = await _sessionService.heartbeat(sid, delta: delta);
       if (!ok) {
         _log('session expired server-side — logging out');
         await disconnect();
@@ -575,6 +580,7 @@ class AppState extends ChangeNotifier {
       if (total >= prev) {
         _monthUsed += total - prev;
         _pendingUsage += total - prev;
+        _reportSince += total - prev;
       }
       if (++_pollTick % 5 == 0 && _pendingUsage > 0) {
         await _usage.add(_pendingUsage); // persist ~every 10s

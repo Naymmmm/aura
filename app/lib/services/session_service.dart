@@ -12,6 +12,7 @@ enum AuthErrorKind {
   accountExpired,
   accountDisabled,
   noCredit,
+  budgetExceeded,
   poolExhausted,
   sessionGone,
   network,
@@ -298,6 +299,8 @@ class SessionService {
               ? AuthErrorKind.noCredit
               : response.body.contains('disabled')
               ? AuthErrorKind.accountDisabled
+              : response.body.contains('budget_exceeded')
+              ? AuthErrorKind.budgetExceeded
               : AuthErrorKind.accountExpired,
         );
       case 503:
@@ -368,6 +371,8 @@ class SessionService {
               ? AuthErrorKind.noCredit
               : response.body.contains('disabled')
               ? AuthErrorKind.accountDisabled
+              : response.body.contains('budget_exceeded')
+              ? AuthErrorKind.budgetExceeded
               : AuthErrorKind.accountExpired,
         );
       case 503:
@@ -377,12 +382,20 @@ class SessionService {
     }
   }
 
-  Future<bool> heartbeat(String sessionId) async {
+  Future<bool> heartbeat(String sessionId, {int delta = 0}) async {
     try {
-      final response = await _client
-          .post(Uri.parse('$_apiBase/v1/session/$sessionId/heartbeat'))
+      final request = http.Request(
+        'POST',
+        Uri.parse('$_apiBase/v1/session/$sessionId/heartbeat'),
+      );
+      if (delta > 0) {
+        request.headers['content-type'] = 'application/json';
+        request.body = jsonEncode({'delta': delta});
+      }
+      final streamed = await _client
+          .send(request)
           .timeout(const Duration(seconds: 15));
-      return response.statusCode == 200;
+      return streamed.statusCode == 200;
     } catch (_) {
       return true;
     }

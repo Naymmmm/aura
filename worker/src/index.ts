@@ -180,7 +180,7 @@ async function serveSession(
   }
   if (action === 'heartbeat') {
     if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
-    return handleHeartbeat(env, id);
+    return handleHeartbeat(req, env, id);
   }
   if (req.method === 'DELETE') return handleCloseSession(env, id);
   return json({ error: 'method_not_allowed' }, 405);
