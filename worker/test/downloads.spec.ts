@@ -22,7 +22,7 @@ async function publishArtifact(version: string, artifact: 'windows' | 'macos' | 
   );
 }
 
-async function downloadSessionCookie(plan?: 'free_trial' | 'standard'): Promise<string> {
+async function downloadSessionCookie(plan: 'free_trial' | 'standard' | 'none' = 'standard'): Promise<string> {
   const login = await worker.fetch(request('/auth/discord/login'), env);
   const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
   const stateCookie = login.headers.get('set-cookie')!.split(';', 1)[0];
@@ -32,7 +32,7 @@ async function downloadSessionCookie(plan?: 'free_trial' | 'standard'): Promise<
       const url = String(input);
       if (url.endsWith('/oauth2/token')) return Response.json({ access_token: 'token' });
       if (url.endsWith('/users/@me')) return Response.json({ id: '123456789', username: 'auraking' });
-      return Response.json({ roles: ['1544233739322789948'] });
+      return new Response('not found', { status: 404 });
     })
   );
   const callback = await worker.fetch(
@@ -42,13 +42,15 @@ async function downloadSessionCookie(plan?: 'free_trial' | 'standard'): Promise<
     env
   );
   vi.unstubAllGlobals();
-  if (plan) {
+  if (plan !== 'none') {
+    const now = Math.floor(Date.now() / 1000);
+    const isTrial = plan === 'free_trial';
     await env.SERVERS.put(
       'account:123456789',
       JSON.stringify({
         discord_id: '123456789', username: 'auraking', display_name: 'Aura King', created_at: 1,
-        expires_at: Math.floor(Date.now() / 1000) + 86400, budget_gb: 1, disabled: false, plan,
-        ...(plan === 'free_trial' ? { trial_claimed_at: 1 } : {}),
+        expires_at: now + (isTrial ? 86400 : 86400 * 30), budget_gb: isTrial ? 1 : 5, disabled: false, plan,
+        ...(isTrial ? { trial_claimed_at: 1 } : {}),
       })
     );
   }
@@ -418,7 +420,7 @@ describe('Discord-gated downloads', () => {
     expect(await response.json()).toEqual({ error: 'standard_required' });
   });
 
-  it('issues a download session only when Discord returns the required role', async () => {
+  it('issues a download session for a verified Discord identity', async () => {
     const login = await worker.fetch(request('/auth/discord/login?return_to=%2Farchive'), env);
     const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
     const stateCookie = login.headers.get('set-cookie')!.split(';', 1)[0];
@@ -429,9 +431,6 @@ describe('Discord-gated downloads', () => {
       }
       if (url.endsWith('/users/@me')) {
         return Response.json({ id: '123456789', username: 'auraking' });
-      }
-      if (url.endsWith('/users/@me/guilds/discord-guild-id/member')) {
-        return Response.json({ roles: ['1544233739322789948'] });
       }
       return new Response('unexpected Discord URL', { status: 500 });
     });
@@ -447,33 +446,18 @@ describe('Discord-gated downloads', () => {
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/archive');
     expect(response.headers.get('set-cookie')).toContain('aura_download=123456789.');
-    expect(outbound).toHaveBeenCalledTimes(3);
+    expect(outbound).toHaveBeenCalledTimes(2);
   });
 
-  it('denies Discord members who do not have the required role', async () => {
-    const login = await worker.fetch(request('/auth/discord/login'), env);
-    const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
-    const stateCookie = login.headers.get('set-cookie')!.split(';', 1)[0];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith('/oauth2/token')) return Response.json({ access_token: 'token' });
-        if (url.endsWith('/users/@me')) return Response.json({ id: '123456789', username: 'no-role' });
-        return Response.json({ roles: ['some-other-role'] });
-      })
-    );
+  it('denies file downloads for a Discord identity without an entitlement', async () => {
+    await publishArtifact('v0.9.0', 'windows', 'windows-v9');
+    await env.SERVERS.delete('account:123456789');
+    const cookie = await downloadSessionCookie('none');
 
-    const response = await worker.fetch(
-      request(`/auth/discord/callback?code=oauth-code&state=${state}`, {
-        headers: { cookie: stateCookie },
-      }),
-      env
-    );
+    const response = await worker.fetch(request('/dl/latest', { headers: { cookie } }), env);
 
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: 'required_discord_role' });
-    expect(response.headers.get('set-cookie') ?? '').not.toContain('aura_download=');
+    expect(await response.json()).toEqual({ error: 'not_entitled' });
   });
 
   it('rejects an OAuth callback whose state does not match the HttpOnly cookie', async () => {

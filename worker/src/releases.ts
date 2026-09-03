@@ -331,10 +331,11 @@ function parseReleaseVersion(value: string): { nums: number[]; pre: string } {
   };
 }
 
-export async function serveArchiveAPI(env: Env, canDownloadSource: boolean): Promise<Response> {
+export async function serveArchiveAPI(env: Env, entitled: boolean, canDownloadSource: boolean): Promise<Response> {
   const { stable, dev } = await readArchive(env);
   return json(
     {
+      entitled,
       canDownloadSource,
       stable: stable.map(manifestToVersion),
       dev: dev.map(manifestToVersion),

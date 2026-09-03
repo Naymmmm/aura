@@ -101,9 +101,10 @@ describe('Aura Discord bot', () => {
     expect(account.budget_gb).toBe(1);
     expect(account.expires_at - account.trial_claimed_at).toBe(7 * 86400);
     expect(audits.keys.length).toBeGreaterThan(0);
+    // Free trial does not carry the customer role.
     expect(outbound).toHaveBeenCalledWith(
       expect.stringContaining(`/guilds/discord-guild-id/members/${discordId}/roles/1544233739322789948`),
-      expect.objectContaining({ method: 'PUT' })
+      expect.objectContaining({ method: 'DELETE' })
     );
 
     const replay = await handleVerifiedDiscordInteraction(
@@ -301,7 +302,7 @@ describe('Aura Discord bot', () => {
     expect(await env.SERVERS.get(`account:${target}`, 'json')).toMatchObject({ plan: 'none' });
   });
 
-  it('still grants the customer role when the optional Discord log post fails', async () => {
+  it('does not grant the customer role for a free-trial claim', async () => {
     const target = '600000000000000050';
     const outbound = vi.fn(async (input: RequestInfo | URL) =>
       String(input).includes('/channels/')
@@ -321,9 +322,10 @@ describe('Aura Discord bot', () => {
     );
 
     expect(response.status).toBe(200);
+    // Free trial no longer grants the customer role — it is removed, not PUT.
     expect(outbound).toHaveBeenCalledWith(
       expect.stringContaining(`/members/${target}/roles/1544233739322789948`),
-      expect.objectContaining({ method: 'PUT' })
+      expect.objectContaining({ method: 'DELETE' })
     );
   });
 });

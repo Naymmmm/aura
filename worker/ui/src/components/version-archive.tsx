@@ -129,6 +129,25 @@ export default function VersionArchive() {
     );
   }
 
+  if (!data.entitled) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 pt-16">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">No active membership</CardTitle>
+            <CardDescription>
+              Your Aura entitlement isn&apos;t active right now. Reactivate your plan to download
+              builds, or sign back in once your membership renews.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild><a href="/archive">Refresh</a></Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-3xl px-4 pb-24 pt-16">
       <header className="flex items-start gap-3">

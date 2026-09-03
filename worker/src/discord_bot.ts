@@ -108,6 +108,24 @@ export async function handleVerifiedDiscordInteraction(interaction: unknown, env
   return message('Unknown Command', 'Register the latest Aura application commands.', RED);
 }
 
+async function getOrCreateAccount(env: Env, discordId: string): Promise<DiscordAccount> {
+  const existing = await getDiscordAccount(env, discordId);
+  if (existing) return existing;
+  // Allow staff to grant premium to a Discord member who has never signed in or
+  // claimed a trial — no prior account required. Identity details are filled in
+  // when the member next signs in with Discord.
+  return {
+    discord_id: discordId,
+    username: `member-${discordId.slice(-6)}`,
+    display_name: `Member ${discordId}`,
+    created_at: nowSec(),
+    expires_at: 0,
+    budget_gb: 0,
+    disabled: false,
+    plan: 'none',
+  };
+}
+
 async function claimTrial(env: Env, actor: Actor): Promise<Response> {
   const existing = await getDiscordAccount(env, actor.id);
   if (existing?.trial_claimed_at) return message('Trial Already Claimed', 'This Discord account has already used its Aura free trial.', AMBER);
@@ -132,7 +150,9 @@ async function manageDays(interaction: unknown, env: Env, actor: Actor): Promise
   if (!targetId || (action !== 'add' && action !== 'remove') || !amount || amount <= 0 || amount > 3650) {
     return message('Invalid Days', 'Choose add/remove, a Discord user, and 1–3650 days.', RED);
   }
-  const account = await getDiscordAccount(env, targetId);
+  const account = action === 'add'
+    ? await getOrCreateAccount(env, targetId)
+    : await getDiscordAccount(env, targetId);
   if (!account) return message('Account Not Found', 'That member must sign in or claim a trial first.', RED);
   const seconds = Math.floor(amount) * 86400;
   account.expires_at = action === 'add' ? Math.max(nowSec(), account.expires_at) + seconds : Math.max(0, account.expires_at - seconds);
@@ -158,8 +178,7 @@ export function creditDaysForAud(aud: number): { days: number; discounted: boole
 async function upgradeStandard(interaction: unknown, env: Env, actor: Actor): Promise<Response> {
   const targetId = optionString(interaction, 'user');
   if (!targetId) return message('Invalid Member', 'Choose the Aura member to upgrade.', RED);
-  const account = await getDiscordAccount(env, targetId);
-  if (!account) return message('Account Not Found', 'That member must sign in or claim a trial first.', RED);
+  const account = await getOrCreateAccount(env, targetId);
   account.plan = 'standard';
   account.expires_at = Math.max(nowSec(), account.expires_at) + 30 * 86400;
   account.disabled = false;
@@ -177,8 +196,7 @@ async function addCredits(interaction: unknown, env: Env, actor: Actor): Promise
   if (!targetId || !conversion || aud === null || aud > 10000) {
     return message('Invalid Credits', 'Choose a member and add at least **A$2.00**.', RED);
   }
-  const account = await getDiscordAccount(env, targetId);
-  if (!account) return message('Account Not Found', 'That member must sign in or claim a trial first.', RED);
+  const account = await getOrCreateAccount(env, targetId);
   account.plan = 'standard';
   account.expires_at = Math.max(nowSec(), account.expires_at) + conversion.days * 86400;
   account.disabled = false;
@@ -280,7 +298,9 @@ async function recordAudit(env: Env, action: string, actor: Actor, account: Disc
 }
 
 async function syncCustomerRole(env: Env, account: DiscordAccount): Promise<void> {
-  const active = !account.disabled && account.expires_at > nowSec() && account.budget_gb > 0;
+  // Only paying customers carry the "customer" role. Free-trial accounts don't
+  // get it, and download access is entitlement-based (DB), not role-based.
+  const active = !account.disabled && account.expires_at > nowSec() && account.budget_gb > 0 && (account.plan === 'standard' || account.plan === 'paid');
   await discordBotRequest(env, `/guilds/${env.DISCORD_GUILD_ID}/members/${account.discord_id}/roles/${env.DISCORD_REQUIRED_ROLE_ID}`, active ? 'PUT' : 'DELETE');
 }
 

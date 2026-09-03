@@ -148,13 +148,7 @@ export async function handleDiscordCallback(req: Request, env: Env): Promise<Res
       return json({ error: 'discord_oauth_failed' }, 502);
     }
 
-    const [userBody, memberBody] = await Promise.all([
-      discordJson(`${DISCORD_API}/users/@me`, tokenBody.access_token),
-      discordJson(
-        `${DISCORD_API}/users/@me/guilds/${encodeURIComponent(env.DISCORD_GUILD_ID)}/member`,
-        tokenBody.access_token
-      ),
-    ]);
+    const userBody = await discordJson(`${DISCORD_API}/users/@me`, tokenBody.access_token);
     if (
       !userBody ||
       typeof userBody !== 'object' ||
@@ -164,21 +158,10 @@ export async function handleDiscordCallback(req: Request, env: Env): Promise<Res
     ) {
       return json({ error: 'discord_oauth_failed' }, 502);
     }
-    const roles =
-      memberBody && typeof memberBody === 'object' && 'roles' in memberBody && Array.isArray(memberBody.roles)
-        ? memberBody.roles.filter((role): role is string => typeof role === 'string')
-        : [];
-    if (!roles.includes(env.DISCORD_REQUIRED_ROLE_ID)) {
-      return new Response(JSON.stringify({ error: 'required_discord_role' }), {
-        status: 403,
-        headers: {
-          'content-type': 'application/json',
-          'cache-control': 'no-store',
-          'set-cookie': clearOauthState(),
-        },
-      });
-    }
 
+    // The download session is tied to the Discord identity, not a guild role.
+    // Entitlement is resolved from the account record (plan + expiry) at access
+    // time, so there's no reliance on a "customer" role being assigned.
     const exp = nowSec() + DOWNLOAD_SESSION_TTL;
     const signature = await hmacHex(env.DOWNLOAD_SESSION_SECRET, `${userBody.id}:${exp}`);
     const headers = new Headers({ location: saved.returnTo, 'cache-control': 'no-store' });

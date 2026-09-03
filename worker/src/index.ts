@@ -91,7 +91,7 @@ export default {
     if (url.pathname === '/v1/archive') {
       const access = await downloadAccess(req, env);
       if (!access.authenticated) return json({ error: 'unauthorized' }, 401);
-      return serveArchiveAPI(env, access.canDownloadSource);
+      return serveArchiveAPI(env, access.entitled, access.canDownloadSource);
     }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
@@ -106,6 +106,7 @@ export default {
     if (url.pathname.startsWith('/dl/')) {
       const access = await downloadAccess(req, env);
       if (!access.authenticated) return loginRedirect(url.pathname);
+      if (!access.entitled) return json({ error: 'not_entitled' }, 403);
       const key = url.pathname.slice(4);
       if (isSourceKey(key) && !access.canDownloadSource) return json({ error: 'standard_required' }, 403);
       return serveDownload(req, env, key);
@@ -123,9 +124,9 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-async function downloadAccess(req: Request, env: Env): Promise<{ authenticated: boolean; canDownloadSource: boolean }> {
+async function downloadAccess(req: Request, env: Env): Promise<{ authenticated: boolean; entitled: boolean; canDownloadSource: boolean }> {
   const appAccount = await authenticateAppToken(req, env);
-  if (appAccount) return { authenticated: true, canDownloadSource: isStandard(appAccount.account.plan) };
+  if (appAccount) return { authenticated: true, entitled: true, canDownloadSource: isStandard(appAccount.account.plan) };
   const legacyId = req.headers.get('x-aura-account-id') ?? '';
   const authorization = req.headers.get('authorization') ?? '';
   const legacyToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
@@ -135,12 +136,19 @@ async function downloadAccess(req: Request, env: Env): Promise<{ authenticated: 
     !legacy.disabled &&
     legacy.expires_at > Math.floor(Date.now() / 1000)
   ) {
-    return { authenticated: true, canDownloadSource: true };
+    return { authenticated: true, entitled: true, canDownloadSource: true };
   }
+  // Entitlement is resolved from the Discord-linked account record (plan + how
+  // long it lasts), never from a guild role.
   const discordId = await downloadSessionDiscordId(req, env);
-  if (!discordId) return { authenticated: false, canDownloadSource: false };
+  if (!discordId) return { authenticated: false, entitled: false, canDownloadSource: false };
   const account = await getDiscordAccount(env, discordId);
-  return { authenticated: true, canDownloadSource: !!account && isStandard(account.plan) };
+  const entitled = !!account && !account.disabled && account.expires_at > Math.floor(Date.now() / 1000);
+  return {
+    authenticated: true,
+    entitled,
+    canDownloadSource: entitled && !!account && isStandard(account.plan),
+  };
 }
 
 function isStandard(plan: string): boolean { return plan === 'standard' || plan === 'paid'; }

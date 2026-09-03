@@ -14,6 +14,7 @@ export interface ArchiveVersion {
 }
 
 export interface ArchiveResponse {
+  entitled: boolean;
   canDownloadSource: boolean;
   stable: ArchiveVersion[];
   dev: ArchiveVersion[];
