@@ -7,6 +7,7 @@ import remakeServers from '../../infra/03b-Remake.ps1?raw';
 import serverUserData from '../../infra/user-data.yaml?raw';
 import udpServerMigration from '../../infra/07-EnableUdpOverTcp.ps1?raw';
 import publishRelease from '../../.github/workflows/publish-release.yml?raw';
+import devBuild from '../../.github/workflows/dev-build.yml?raw';
 
 describe('release workflow', () => {
   it('builds tracked source and publishes every artifact to the version archive', () => {
@@ -60,6 +61,17 @@ describe('release workflow', () => {
     expect(publishRelease).toContain('source_run_id:');
     expect(publishRelease).toContain('run-id: ${{ inputs.source_run_id }}');
     expect(publishRelease).toContain('/v1/releases/announce');
+  });
+
+  it('publishes dev branch builds to the archive without promoting them', () => {
+    expect(devBuild).toContain("branches: ['dev']");
+    expect(devBuild).toContain('/v1/releases/publish');
+    expect(devBuild).toContain('secrets.AURA_RELEASE_UPLOAD_TOKEN');
+    expect(devBuild).toContain('promote=false');
+    expect(devBuild).toContain('-dev.');
+    expect(devBuild).toContain('dev-windows-amd64');
+    expect(devBuild).toContain('dev-macos-arm64.dmg');
+    expect(devBuild).not.toContain('/v1/releases/announce');
   });
 
   it('backfills every historical binary and generated source without leaving an old release as latest', () => {

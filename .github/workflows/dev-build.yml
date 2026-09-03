@@ -1,0 +1,224 @@
+name: dev build
+
+on:
+  push:
+    branches: ['dev']
+  workflow_dispatch:
+
+env:
+  NAIVE_VERSION: 150.0.7871.63-1
+  FLUTTER_VERSION: 3.44.6
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: aura-core/go.mod
+
+      - name: Test aura-core
+        working-directory: aura-core
+        run: go test ./...
+
+      - name: Validate PowerShell deployment scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          @(Get-ChildItem infra -Filter *.ps1) + @(Get-ChildItem app/tool -Filter *.ps1) | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Prepare secrets.dart from example
+        shell: pwsh
+        run: Copy-Item app/lib/secrets.example.dart app/lib/secrets.dart -Force
+
+      - name: Download NaiveProxy and Wintun (windows-amd64)
+        shell: pwsh
+        run: |
+          $work = "$env:RUNNER_TEMP\naiveproxy"
+          $dir = "$work\bundle"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = "$work\naive.zip"
+          Invoke-WebRequest "https://github.com/klzgrad/naiveproxy/releases/download/v$env:NAIVE_VERSION/naiveproxy-v$env:NAIVE_VERSION-win-x64.zip" -OutFile $zip
+          $extract = "$work\ex"
+          Expand-Archive $zip $extract
+          Get-ChildItem "$extract" -Directory | Select-Object -First 1 | ForEach-Object {
+            Copy-Item "$($_.FullName)\naive.exe" "$dir\naive.exe" -Force
+          }
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$work\wintun.zip"
+          Expand-Archive "$work\wintun.zip" "$work\w"
+          Copy-Item "$work\w\wintun\bin\amd64\wintun.dll" "$dir\wintun.dll" -Force
+          echo "NAIVE_DIR=$dir" >> $env:GITHUB_ENV
+
+      - name: Test official NaiveProxy integration
+        shell: pwsh
+        working-directory: aura-core
+        run: |
+          $env:AURA_NAIVE_PATH = "$env:NAIVE_DIR\naive.exe"
+          go test -run TestNaiveProxyMultiListenerIntegration -count=1 .
+
+      - run: flutter pub get
+        working-directory: app
+
+      - run: flutter analyze
+        working-directory: app
+
+      - run: flutter test --concurrency=1 --reporter=expanded --timeout=30s
+        working-directory: app
+
+      - run: flutter build windows --release
+        working-directory: app
+
+      - name: Build aura-core helper
+        shell: pwsh
+        working-directory: aura-core
+        run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o aura-core.exe .
+
+      - name: Bundle Aura Core + NaiveProxy + Wintun + zip
+        shell: pwsh
+        run: |
+          $rel = "app\build\windows\x64\runner\Release"
+          New-Item -ItemType Directory -Force -Path "$rel\aura-core" | Out-Null
+          Copy-Item "aura-core\aura-core.exe" "$rel\aura-core\aura-core.exe" -Force
+          Copy-Item "$env:NAIVE_DIR\naive.exe" "$rel\aura-core\naive.exe" -Force
+          Copy-Item "$env:NAIVE_DIR\wintun.dll" "$rel\aura-core\wintun.dll" -Force
+          if (Get-ChildItem "$rel\aura-core" -Recurse | Where-Object Name -Match 'sing-box|singbox') { throw 'sing-box leaked into the release bundle' }
+          Compress-Archive -Path "$rel\*" -DestinationPath dev-windows-amd64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-windows-amd64
+          path: dev-windows-amd64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: aura-core/go.mod
+
+      - name: Test aura-core
+        working-directory: aura-core
+        run: go test ./...
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Prepare secrets.dart from example
+        run: cp app/lib/secrets.example.dart app/lib/secrets.dart
+
+      - name: Download NaiveProxy (darwin-arm64)
+        run: |
+          NAIVE_DIR="$RUNNER_TEMP/naiveproxy"; mkdir -p "$NAIVE_DIR"
+          curl -fsSL "https://github.com/klzgrad/naiveproxy/releases/download/v${NAIVE_VERSION}/naiveproxy-v${NAIVE_VERSION}-mac-arm64-arm64.tar.xz" | tar -xJ -C "$NAIVE_DIR" --strip-components=1
+          echo "NAIVE_DIR=$NAIVE_DIR" >> "$GITHUB_ENV"
+
+      - name: Test official NaiveProxy integration
+        working-directory: aura-core
+        run: AURA_NAIVE_PATH="$NAIVE_DIR/naive" go test -run TestNaiveProxyMultiListenerIntegration -count=1 .
+
+      - run: flutter pub get
+        working-directory: app
+
+      - run: flutter analyze
+        working-directory: app
+
+      - run: flutter test --concurrency=1 --reporter=expanded --timeout=30s
+        working-directory: app
+
+      - run: flutter build macos --release
+        working-directory: app
+
+      - name: Build aura-core helper
+        working-directory: aura-core
+        run: go build -trimpath -ldflags "-s -w" -o aura-core .
+
+      - name: Bundle Aura Core + NaiveProxy + DMG
+        run: |
+          APP="app/build/macos/Build/Products/Release/aura.app"
+          mkdir -p "$APP/Contents/MacOS/aura-core"
+          cp aura-core/aura-core "$APP/Contents/MacOS/aura-core/"
+          cp "$NAIVE_DIR"/naive "$APP/Contents/MacOS/aura-core/"
+          ! find "$APP" -iname '*sing-box*' -o -iname '*singbox*' | grep -q .
+          codesign --force --deep --sign - "$APP"
+          DMG_ROOT="$RUNNER_TEMP/aura-dmg"
+          mkdir -p "$DMG_ROOT"
+          cp -R "$APP" "$DMG_ROOT/Aura.app"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          hdiutil create -volname Aura -srcfolder "$DMG_ROOT" -ov -format UDZO dev-macos-arm64.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-macos-arm64
+          path: dev-macos-arm64.dmg
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish dev build to the archive
+        env:
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Label dev builds separately from the stable channel. promote=false
+          # means they land in the version archive without touching 'latest'.
+          base="$(sed -n 's/^version: \([0-9]*\)\.\([0-9]*\)\.\([0-9]*\).*/\1.\2.\3/p' app/pubspec.yaml | head -1)"
+          version="v${base}-dev.${GITHUB_RUN_NUMBER}"
+
+          git archive --format=zip --prefix="aura-${version}/" --output aura-source.zip HEAD
+
+          publish() {
+            local artifact="$1"
+            local file="$2"
+            local sha256 content_type
+            sha256="$(sha256sum "$file" | awk '{print $1}')"
+            content_type=application/zip
+            case "$file" in *.dmg) content_type=application/x-apple-diskimage ;; esac
+            curl --fail-with-body --retry 3 --retry-all-errors \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${version}" \
+              -F "artifact=${artifact}" \
+              -F "sha256=${sha256}" \
+              -F "promote=false" \
+              -F "file=@${file};type=${content_type}" \
+              https://api.copal.run/v1/releases/publish
+          }
+
+          publish windows dist/dev-windows-amd64/dev-windows-amd64.zip
+          publish macos dist/dev-macos-arm64/dev-macos-arm64.dmg
+          publish source aura-source.zip
