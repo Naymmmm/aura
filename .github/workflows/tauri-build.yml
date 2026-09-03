@@ -1,0 +1,139 @@
+name: tauri build
+
+on:
+  push:
+    branches: ['tauri']
+  workflow_dispatch:
+
+env:
+  NAIVE_VERSION: 150.0.7871.63-1
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app-tauri/src-tauri
+
+      - name: Install frontend deps
+        working-directory: app-tauri
+        run: npm ci
+
+      - name: Build Tauri app (NSIS installer)
+        working-directory: app-tauri
+        run: npx tauri build --bundles nsis
+
+      - name: Bundle aura-core + naive + wintun into the installer staging
+        shell: pwsh
+        run: |
+          $rel = "app-tauri\src-tauri\target\release"
+          $nsis = Get-ChildItem "$rel\bundle\nsis" -Filter *.exe | Select-Object -First 1
+          echo "NSIS=$($nsis.FullName)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows-amd64
+          path: app-tauri/src-tauri/target/release/bundle/nsis/*.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app-tauri/src-tauri
+
+      - name: Install frontend deps
+        working-directory: app-tauri
+        run: npm ci
+
+      - name: Build Tauri app (DMG)
+        working-directory: app-tauri
+        run: npx tauri build --bundles dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-macos-arm64
+          path: app-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish tauri-dev build to the archive
+        env:
+          AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Label the Tauri port separately from the Flutter dev builds.
+          base="$(node -p "require('./app-tauri/package.json').version")"
+          version="v${base}-tauri-dev.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+          git archive --format=zip --prefix="aura-${version}/" --output aura-source.zip HEAD
+
+          publish() {
+            local artifact="$1"
+            local file="$2"
+            local sha256 content_type
+            sha256="$(sha256sum "$file" | awk '{print $1}')"
+            content_type=application/zip
+            case "$file" in *.dmg) content_type=application/x-apple-diskimage ;; esac
+            curl --fail-with-body --retry 3 --retry-all-errors \
+              -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
+              -F "version=${version}" \
+              -F "artifact=${artifact}" \
+              -F "sha256=${sha256}" \
+              -F "promote=false" \
+              -F "file=@${file};type=${content_type}" \
+              https://api.copal.run/v1/releases/publish
+          }
+
+          publish windows "$(ls dist/tauri-windows-amd64/*.exe | head -1)"
+          publish macos "$(ls dist/tauri-macos-arm64/*.dmg | head -1)"
+          publish source aura-source.zip
+
+      - name: Publish tauri-dev GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "${VERSION}" \
+            --notes "Tauri (React + Rust) port — development build from the \`tauri\` branch." \
+            dist/tauri-windows-amd64/*.exe \
+            dist/tauri-macos-arm64/*.dmg \
+            aura-source.zip
