@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AuraMark } from '@/components/aura-mark';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -130,11 +131,14 @@ export default function VersionArchive() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-24 pt-16">
-      <header>
-        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Version Archive</h1>
-        <p className="mt-2 text-muted-foreground">
-          Current and archived builds for authorized Aura Discord members.
-        </p>
+      <header className="flex items-start gap-3">
+        <AuraMark className="mt-1" />
+        <div>
+          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Version Archive</h1>
+          <p className="mt-2 text-muted-foreground">
+            Current and archived builds for authorized Aura Discord members.
+          </p>
+        </div>
       </header>
 
       <Tabs defaultValue="stable" className="mt-8">

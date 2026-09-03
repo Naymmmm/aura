@@ -31,7 +31,7 @@ export default {
     const url = new URL(req.url);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: HDRS });
     if (url.pathname === '/healthz') return new Response('ok');
-    if (url.pathname.startsWith('/assets/')) return env.ASSETS.fetch(req);
+    if (url.pathname.startsWith('/assets/') || url.pathname === '/favicon.png' || url.pathname === '/apple-touch-icon.png' || url.pathname === '/aura-mark.png') return env.ASSETS.fetch(req);
     if (url.pathname === '/v1/config') return serveConfig(req, env);
 
     if (url.pathname === '/v1/auth/discord/start') {

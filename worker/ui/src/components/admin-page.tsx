@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { AuraMark } from '@/components/aura-mark';
 
 interface AdminAccount {
   id: string;
@@ -74,7 +75,8 @@ function LoginView({ onLogin }: { onLogin: (password: string) => Promise<void> }
     <div className="mx-auto max-w-sm px-4 pt-[18vh]">
       <Card>
         <CardHeader className="text-center">
-          <CardTitle className="text-xl">
+          <AuraMark className="mx-auto" />
+          <CardTitle className="text-xl mt-2">
             Aura<span className="text-primary">.</span>
           </CardTitle>
           <CardDescription>admin</CardDescription>
@@ -324,11 +326,14 @@ export default function AdminPage() {
   return (
     <div className="mx-auto max-w-5xl px-4 pb-24 pt-16">
       <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">
-            Aura<span className="text-primary">.</span> <span className="font-normal text-muted-foreground">admin</span>
-          </h1>
-          <div className="text-sm text-muted-foreground">Discord accounts · sessions · downloads</div>
+        <div className="flex items-center gap-3">
+          <AuraMark />
+          <div>
+            <h1 className="text-2xl font-bold">
+              Aura<span className="text-primary">.</span> <span className="font-normal text-muted-foreground">admin</span>
+            </h1>
+            <div className="text-sm text-muted-foreground">Discord accounts · sessions · downloads</div>
+          </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadAccounts}>Refresh</Button>
