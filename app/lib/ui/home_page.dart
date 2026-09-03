@@ -138,7 +138,7 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                '(v26.0.1)',
+                '(v26.1.0)',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                   letterSpacing: 1.1,

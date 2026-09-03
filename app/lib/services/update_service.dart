@@ -20,7 +20,7 @@ class UpdateService {
   final String? _stageDirectoryOverride;
 
   /// The version this build ships with (bump per release).
-  static const appVersion = 'v26.0.1';
+  static const appVersion = 'v26.1.0';
 
   /// Which release key this platform downloads.
   static String platformKey() => Platform.isMacOS ? 'latest-macos' : 'latest';

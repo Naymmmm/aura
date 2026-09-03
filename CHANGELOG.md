@@ -1,5 +1,17 @@
 # Changelog
 
+## 26.1.0
+
+- Replaced the Discord downloads page with a shadcn Version Archive at `/archive`, with
+  a Stable / Dev picker and the new Aura asterisk branding.
+- Made download access entitlement-based (account plan + expiry), removing the Discord
+  role requirement. Free trial no longer grants a customer role; staff can grant premium
+  to a member without a prior trial.
+- Fixed macOS builds being served as `.zip` instead of `.dmg`.
+- Added a dev branch CI that publishes dev-labeled builds and GitHub prereleases.
+- Improved Windows reliability: aura-core startup failures are surfaced and the updater
+  self-elevates and verifies the relaunch.
+
 ## 26.0.1
 
 - Adopted `year.minor.hotfix` release versions.

@@ -11,7 +11,7 @@ import 'package:http/testing.dart';
 
 void main() {
   test('uses the year.minor.hotfix release version', () {
-    expect(UpdateService.appVersion, 'v26.0.1');
+    expect(UpdateService.appVersion, 'v26.1.0');
   });
 
   test(
@@ -22,7 +22,7 @@ void main() {
         appPid: 42,
         authToken: 'aura_token',
         legacyAccountId: 'legacy01',
-        version: 'v26.0.1',
+        version: 'v26.1.0',
         sha256: 'abc123',
       );
 
@@ -31,7 +31,7 @@ void main() {
       expect(script, contains('shasum -a 256'));
       expect(script, contains('hdiutil attach'));
       expect(script, contains('display notification'));
-      expect(script, contains('v26.0.1'));
+      expect(script, contains('v26.1.0'));
       expect(script, contains('X-Aura-Account-Id: legacy01'));
       expect(script, isNot(contains('\n+')));
     },
