@@ -122,7 +122,15 @@ class AuraCoreManager {
       if (await _compatible()) return;
       await Future<void>.delayed(const Duration(milliseconds: 350));
     }
-    throw StateError('aura-core helper did not come online after setup');
+    String detail;
+    try {
+      detail = await recentLog(d);
+    } catch (_) {
+      detail = 'aura-core is not reachable';
+    }
+    throw StateError(
+      'aura-core helper did not come online after setup\n$detail',
+    );
   }
 
   static Future<void> _ensureToken(String d) async {
@@ -320,6 +328,23 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
+$online = $false
+for ($i = 0; $i -lt 40 -and -not $online; $i++) {
+  try {
+    $client = New-Object System.Net.Sockets.TcpClient
+    $client.Connect('127.0.0.1', 45873)
+    $client.Close()
+    $online = $true
+  } catch {
+    Start-Sleep -Milliseconds 250
+  }
+}
+if (-not $online) {
+  $helperLog = Join-Path $runtime 'helper.log'
+  $detail = if (Test-Path -LiteralPath $helperLog) { Get-Content -Raw -LiteralPath $helperLog } else { 'aura-core did not open its API port after install' }
+  Set-Content -LiteralPath $resultFile -Value $detail
+  exit 1
+}
 Set-Content -LiteralPath $resultFile -Value 'ok'
 } catch {
   Set-Content -LiteralPath $resultFile -Value ($_ | Out-String)

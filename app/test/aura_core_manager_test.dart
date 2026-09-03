@@ -35,4 +35,15 @@ void main() {
     expect(script, contains('install-result.log'));
     expect(script, contains('Get-Content -Raw'));
   });
+
+  test('Windows installer waits for the helper API and reports its log', () {
+    final script = AuraCoreManager.windowsInstallerScript(
+      r'C:\bundle\aura-core',
+      r'C:\state\aura-core',
+    );
+
+    expect(script, contains('New-Object System.Net.Sockets.TcpClient'));
+    expect(script, contains("Connect('127.0.0.1', 45873)"));
+    expect(script, contains("Join-Path \$runtime 'helper.log'"));
+  });
 }

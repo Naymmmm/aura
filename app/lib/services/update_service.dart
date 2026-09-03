@@ -122,7 +122,9 @@ class UpdateService {
     if (Platform.isWindows) {
       final appDir = File(Platform.resolvedExecutable).parent.path;
       final script = File(_p(stageDir, 'updater.ps1'));
-      await script.writeAsString(_winUpdater());
+      await script.writeAsString(
+        _winUpdater(stageDir, appDir, Platform.resolvedExecutable),
+      );
       await Process.start('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
@@ -132,9 +134,6 @@ class UpdateService {
         'Hidden',
         '-File',
         script.path,
-        stageDir,
-        appDir,
-        Platform.resolvedExecutable,
       ], mode: ProcessStartMode.detachedWithStdio);
       return;
     }
@@ -162,17 +161,72 @@ class UpdateService {
     ], mode: ProcessStartMode.detachedWithStdio);
   }
 
-  static String _winUpdater() {
+  static String _winUpdater(String stage, String appDir, String exe) {
     return r'''
-param([string]$stage, [string]$appDir, [string]$exe)
+$stage = @@STAGE@@
+$appDir = @@APPDIR@@
+$exe = @@EXE@@
+$resultFile = Join-Path $stage 'updater-result.log'
+Set-Content -LiteralPath $resultFile -Value 'updater started' -Force
+
+# The app is distributed as a zip, so the usual install folder is user-writable
+# and no elevation is needed. When it was dropped into a protected location
+# (e.g. Program Files), re-run this same script elevated before touching files.
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
+  $probe = Join-Path $appDir '.aura-write-test'
+  $writable = $false
+  try {
+    Set-Content -LiteralPath $probe -Value 'probe' -ErrorAction Stop
+    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    $writable = $true
+  } catch {
+    $writable = $false
+  }
+  if (-not $writable) {
+    try {
+      $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $PSCommandPath + '"'))
+    } catch {
+      Set-Content -LiteralPath $resultFile -Value ("Administrator approval failed: $_") -Force
+      exit 2
+    }
+    if ($p.ExitCode -ne 0) {
+      $detail = if (Test-Path -LiteralPath $resultFile) { Get-Content -Raw -LiteralPath $resultFile } else { "Elevated updater exited with code $($p.ExitCode)" }
+      Write-Error $detail
+    }
+    exit $p.ExitCode
+  }
+}
+
+$ErrorActionPreference = 'Stop'
 $name = [IO.Path]::GetFileNameWithoutExtension($exe)
 $deadline = (Get-Date).AddSeconds(45)
 while ((Get-Process -Name $name -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-# swap app dir contents (staging lives in the support dir, outside appDir)
-Get-ChildItem $appDir | Remove-Item -Recurse -Force
-Copy-Item (Join-Path $stage '*') $appDir -Recurse -Force
-Start-Process $exe
-''';
+
+try {
+  # Swap app dir contents (staging lives in the support dir, outside appDir).
+  Get-ChildItem $appDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+  Get-ChildItem $stage -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'updater.ps1' -and $_.Name -ne 'updater-result.log' } | Copy-Item -Destination $appDir -Recurse -Force
+  if (-not (Test-Path -LiteralPath $exe)) { throw "new build is missing after the swap: $exe" }
+
+  Start-Process -FilePath $exe
+
+  $online = $false
+  for ($i = 0; $i -lt 40 -and -not $online; $i++) {
+    Start-Sleep -Milliseconds 250
+    if (Get-Process -Name $name -ErrorAction SilentlyContinue) { $online = $true }
+  }
+  if (-not $online) { throw 'aura did not start after the update' }
+
+  Set-Content -LiteralPath $resultFile -Value 'ok' -Force
+} catch {
+  Set-Content -LiteralPath $resultFile -Value ($_ | Out-String) -Force
+  exit 1
+}
+'''
+        .replaceAll('@@STAGE@@', _ps(stage))
+        .replaceAll('@@APPDIR@@', _ps(appDir))
+        .replaceAll('@@EXE@@', _ps(exe));
   }
 
   static String macUpdaterScript({
@@ -221,6 +275,9 @@ display notification "Aura $version is installed and ready." with title "Aura up
 
   /// POSIX single-quote for embedding in sh.
   static String _sh(String p) => "'${p.replaceAll("'", "'\\''")}'";
+
+  /// PowerShell single-quote for embedding paths in generated scripts.
+  static String _ps(String value) => "'${value.replaceAll("'", "''")}'";
 
   static String _appleScriptQuote(String value) =>
       value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
