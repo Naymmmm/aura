@@ -60,11 +60,12 @@ describe('Discord account admin fallback', () => {
     expect(await response.json()).toEqual({ error: 'discord_identity_required' });
   });
 
-  it('removes generated-ID account creation from the admin page', async () => {
+  it('serves the React admin shell without exposing account creation', async () => {
     const response = await worker.fetch(request('/admin'), env);
     const html = await response.text();
 
-    expect(html).toContain('Discord accounts');
+    expect(response.status).toBe(200);
+    expect(html).toContain('id="root"');
     expect(html).not.toContain('Create account');
     expect(html).not.toContain('api token');
   });

@@ -14,7 +14,6 @@
 import { json, HDRS, safeEqual } from './util';
 import { authenticateLegacyCredentials, handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
-import { serveAdminPage } from './admin_page';
 import { serveDownload, serveArchiveAPI, serveReleaseMeta } from './releases';
 import { handleCiRelease, handleCiReleaseAnnouncement } from './releases';
 import {
@@ -98,7 +97,11 @@ export default {
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
     if (sessMatch) return serveSession(req, env, sessMatch[1], sessMatch[2]);
 
-    if (url.pathname === '/admin') return serveAdminPage();
+    if (url.pathname === '/admin') {
+      // React admin panel — the app shows a login form if the admin cookie is
+      // absent; all account/release work happens via /v1/admin/*.
+      return env.ASSETS.fetch(new URL('/index.html', req.url));
+    }
 
     if (url.pathname.startsWith('/dl/')) {
       const access = await downloadAccess(req, env);
