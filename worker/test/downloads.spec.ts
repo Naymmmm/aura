@@ -60,11 +60,18 @@ async function downloadSessionCookie(plan?: 'free_trial' | 'standard'): Promise<
 describe('Discord-gated downloads', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('redirects the download portal to Discord authentication', async () => {
-    const response = await worker.fetch(request('/downloads'), env);
+  it('redirects the version archive to Discord authentication', async () => {
+    const response = await worker.fetch(request('/archive'), env);
 
     expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/auth/discord/login?return_to=%2Fdownloads');
+    expect(response.headers.get('location')).toBe('/auth/discord/login?return_to=%2Farchive');
+  });
+
+  it('redirects the legacy /downloads path to the version archive', async () => {
+    const response = await worker.fetch(request('/downloads'), env);
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get('location')).toBe('https://api.copal.run/archive');
   });
 
   it('redirects direct artifact downloads while preserving the requested path', async () => {
@@ -307,14 +314,14 @@ describe('Discord-gated downloads', () => {
     await publishArtifact('v0.4.0', 'source', 'source-v4');
     const cookie = await downloadSessionCookie('standard');
 
-    const response = await worker.fetch(request('/downloads', { headers: { cookie } }), env);
+    const response = await worker.fetch(request('/archive', { headers: { cookie } }), env);
     const html = await response.text();
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    expect(html).toContain('<h1>Aura Downloads</h1>');
-    expect(html).toContain('class="latest-release"');
-    expect(html).toContain('class="older-releases"');
+    expect(html).toContain('Version Archive');
+    expect(html).toContain('data-channel="stable"');
+    expect(html).toContain('data-channel="dev"');
     expect(html).toContain('v0.4.0');
     expect(html).toContain('/dl/archive/v0.4.0/windows.zip');
     expect(html).toContain('/dl/archive/v0.4.0/source.zip');
@@ -325,7 +332,7 @@ describe('Discord-gated downloads', () => {
     await publishArtifact('v0.4.1', 'source', 'source-v41');
     const cookie = await downloadSessionCookie('free_trial');
 
-    const response = await worker.fetch(request('/downloads', { headers: { cookie } }), env);
+    const response = await worker.fetch(request('/archive', { headers: { cookie } }), env);
     const html = await response.text();
     const directSource = await worker.fetch(
       request('/dl/archive/v0.4.1/source.zip', { headers: { cookie } }),
@@ -410,7 +417,7 @@ describe('Discord-gated downloads', () => {
   });
 
   it('issues a download session only when Discord returns the required role', async () => {
-    const login = await worker.fetch(request('/auth/discord/login?return_to=%2Fdownloads'), env);
+    const login = await worker.fetch(request('/auth/discord/login?return_to=%2Farchive'), env);
     const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
     const stateCookie = login.headers.get('set-cookie')!.split(';', 1)[0];
     const outbound = vi.fn(async (input: RequestInfo | URL) => {
@@ -436,7 +443,7 @@ describe('Discord-gated downloads', () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/downloads');
+    expect(response.headers.get('location')).toBe('/archive');
     expect(response.headers.get('set-cookie')).toContain('aura_download=123456789.');
     expect(outbound).toHaveBeenCalledTimes(3);
   });
@@ -546,12 +553,14 @@ describe('Discord-gated downloads', () => {
     );
 
     const cookie = await downloadSessionCookie('standard');
-    const html = await (await worker.fetch(request('/downloads', { headers: { cookie } }), env)).text();
-    const latest = html.slice(html.indexOf('class="latest-release"'), html.indexOf('class="older-releases"'));
+    const html = await (await worker.fetch(request('/archive', { headers: { cookie } }), env)).text();
+    const stableStart = html.indexOf('class="channel" data-channel="stable"');
+    const devStart = html.indexOf('class="channel" data-channel="dev"');
+    const stableSection = html.slice(stableStart, devStart);
+    const devSection = html.slice(devStart);
 
-    expect(html.indexOf('<h2>v26.0.1</h2>')).toBeGreaterThan(-1);
-    expect(latest).toContain('<h2>v26.0.1</h2>');
-    expect(latest).not.toContain('<h2>v26.0.1-dev.9</h2>');
-    expect(html.indexOf('<h2>v26.0.1</h2>')).toBeLessThan(html.indexOf('<h2>v26.0.1-dev.9</h2>'));
+    expect(stableSection).toContain('v26.0.1');
+    expect(stableSection).not.toContain('v26.0.1-dev.9');
+    expect(devSection).toContain('v26.0.1-dev.9');
   });
 });

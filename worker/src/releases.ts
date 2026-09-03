@@ -2,6 +2,7 @@
 // Bucket stays private; the worker is the only reader. 'latest' is the stable key.
 
 import { json, safeEqual } from './util';
+import { shadcnCss } from './theme';
 
 // POST /v1/admin/release — multipart: form field "file", optional "key"
 // (default "latest", e.g. "latest-macos" for other platforms), optional
@@ -331,7 +332,7 @@ function parseReleaseVersion(value: string): { nums: number[]; pre: string } {
   };
 }
 
-export async function serveDownloadPage(env: Env, canDownloadSource: boolean): Promise<Response> {
+export async function serveArchivePage(env: Env, canDownloadSource: boolean): Promise<Response> {
   const indexObject = await env.RELEASES.get('archive/index.json');
   let versions: ArchiveIndex['versions'] = [];
   if (indexObject) {
@@ -354,48 +355,94 @@ export async function serveDownloadPage(env: Env, canDownloadSource: boolean): P
     }
   }
 
-  // Re-sort on read so a stale index (e.g. written before the dev-build
-  // prerelease ordering was introduced) never shows a -dev build as latest.
+  // Re-sort on read so a stale index never shows a -dev build as the latest
+  // release. Dev builds (published as vX.Y.Z-dev.N) rank below their stable base.
   versions.sort((a, b) => compareVersionsDescending(a.version, b.version));
 
   const manifests = await Promise.all(
     versions.slice(0, 50).map((entry) => readArchiveManifest(env.RELEASES, entry.version))
   );
-  const cards = manifests
-    .map((manifest) => {
-      const links = (['windows', 'macos', 'source'] as const)
-        .filter((artifact) => artifact !== 'source' || canDownloadSource)
-        .filter((artifact) => manifest.artifacts[artifact])
-        .map((artifact) => {
-          const label = artifact === 'windows' ? 'Windows' : artifact === 'macos' ? 'macOS' : 'Source code';
-          const key = manifest.artifacts[artifact]!.key;
-          const extension = key.endsWith('.dmg') ? 'dmg' : 'zip';
-          return `<a href="/dl/archive/${manifest.version}/${artifact}.${extension}">${label}</a>`;
-        })
-        .join('');
-      return `<article><h2>${manifest.version}</h2><div class="links">${links}</div></article>`;
-    });
-  const latest = cards[0] ?? '';
-  const older = cards.slice(1).join('');
+  const stable = manifests.filter((manifest) => !isPrerelease(manifest.version));
+  const dev = manifests.filter((manifest) => isPrerelease(manifest.version));
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aura downloads</title><style>
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui;background:#090b10;color:#f4f5f7}body{margin:0}
-main{width:min(760px,calc(100% - 32px));margin:64px auto}header{margin-bottom:32px}h1{font-size:clamp(2rem,7vw,4rem);margin:0}
-p{color:#a9afbb}.latest-release{padding:24px;border:1px solid #3b4250;border-radius:18px;margin-bottom:34px}.latest-release>p,.older-releases>p{margin:0 0 10px;text-transform:uppercase;letter-spacing:.12em;font-size:.72rem}.older-releases{border-left:1px solid #3b4250;padding-left:24px}article{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 0;border-top:1px solid #272b35}
-h2{margin:0;font-size:1.15rem}.links{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px}a{color:#090b10;background:#d9ff65;padding:10px 14px;border-radius:999px;text-decoration:none;font-weight:700}
-.empty{padding:32px 0;border-top:1px solid #272b35}@media(max-width:520px){article{align-items:flex-start;flex-direction:column}.links{justify-content:flex-start}}
-</style></head><body><main><header><h1>Aura Downloads</h1><p>Current and archived builds for authorized Aura Discord members.</p></header>
-${latest ? `<section class="latest-release"><p>Latest version</p>${latest}</section><section class="older-releases"><p>Older versions</p>${older || '<p class="empty">No older releases yet.</p>'}</section>` : '<p class="empty">No releases have been published yet.</p>'}</main></body></html>`;
+<title>Aura · Version Archive</title><style>${shadcnCss}</style>
+</head><body><div class="wrap">
+<header><h1 class="page-title">Version Archive</h1><p class="page-sub">Current and archived builds for authorized Aura Discord members.</p></header>
+
+<div class="segmented" role="tablist" style="margin-top:28px">
+  <button role="tab" aria-selected="true" data-channel="stable">Stable</button>
+  <button role="tab" aria-selected="false" data-channel="dev">Dev</button>
+</div>
+
+${renderChannel('stable', stable, false, canDownloadSource)}
+${renderChannel('dev', dev, true, canDownloadSource)}
+
+</div>
+<script>
+(function () {
+  var buttons = document.querySelectorAll('.segmented button');
+  var channels = document.querySelectorAll('.channel');
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () {
+      buttons.forEach(function (x) { x.setAttribute('aria-selected', x === b ? 'true' : 'false'); });
+      channels.forEach(function (c) { c.hidden = c.getAttribute('data-channel') !== b.getAttribute('data-channel'); });
+    });
+  });
+})();
+</script>
+</body></html>`;
   return new Response(html, {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'private, no-store',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       'x-content-type-options': 'nosniff',
     },
   });
+}
+
+function renderChannel(name: string, manifests: ArchiveManifest[], dev: boolean, canDownloadSource: boolean): string {
+  const channel = dev ? 'dev' : 'stable';
+  if (manifests.length === 0) {
+    return `<section class="channel" data-channel="${channel}" ${channel === 'stable' ? '' : 'hidden'}>` +
+      `<p class="empty">No ${channel} builds have been published yet.</p></section>`;
+  }
+  const latest = renderVersion(manifests[0], { dev, latest: true, canDownloadSource });
+  const older = manifests.slice(1).map((manifest) => renderVersion(manifest, { dev, canDownloadSource })).join('');
+  const channelLabel = dev ? 'Dev / branch' : 'Stable';
+  return `<section class="channel" data-channel="${channel}" ${channel === 'stable' ? '' : 'hidden'}>` +
+    `<div class="labels" style="margin-top:28px">Latest ${channelLabel}</div>` +
+    `<div class="card" style="margin-top:10px">${latest}</div>` +
+    (older ? `<div class="labels" style="margin-top:32px">Older builds</div><div class="versions">${older}</div>` : '') +
+    `</section>`;
+}
+
+function renderVersion(manifest: ArchiveManifest, opts: { dev: boolean; latest?: boolean; canDownloadSource: boolean }): string {
+  const badge = opts.latest
+    ? '<span class="badge badge-primary" style="margin-left:8px">latest</span>'
+    : opts.dev
+    ? '<span class="badge badge-dev" style="margin-left:8px">dev</span>'
+    : '';
+  const links = (['windows', 'macos', 'source'] as const)
+    .filter((artifact) => artifact !== 'source' || opts.canDownloadSource)
+    .filter((artifact) => manifest.artifacts[artifact])
+    .map((artifact) => {
+      const key = manifest.artifacts[artifact]!.key;
+      const extension = key.endsWith('.dmg') ? 'dmg' : 'zip';
+      const label = artifact === 'windows' ? 'Windows' : artifact === 'macos' ? 'macOS' : 'Source';
+      return `<a class="btn btn-outline" href="/dl/archive/${manifest.version}/${artifact}.${extension}">${label}</a>`;
+    })
+    .join('');
+  return `<div class="version-row">` +
+    `<div><div class="version-name">${manifest.version}${badge}</div><div class="version-meta">${new Date(manifest.uploaded).toISOString().slice(0, 10)}</div></div>` +
+    `<div class="artifacts">${links || '<span class="badge">none</span>'}</div>` +
+    `</div>`;
+}
+
+function isPrerelease(version: string): boolean {
+  return parseReleaseVersion(version).pre !== '';
 }
 
 // GET /v1/release/meta?key=latest|latest-macos|source — version + sha256 for

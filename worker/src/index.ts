@@ -8,14 +8,14 @@
 // GET  /v1/release/meta?key=     → {version, sha256, size} for the auto-updater
 // GET  /admin                    → admin panel HTML
 // /v1/admin/...                  → admin API (login/logout/me/accounts/release)
-// GET  /downloads               → Discord-gated release archive
+// GET  /archive                → Discord-gated version archive (Stable / Dev)
 // GET  /dl/{key}                 → Discord-gated release download
 
 import { json, HDRS, safeEqual } from './util';
 import { authenticateLegacyCredentials, handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveAdminPage } from './admin_page';
-import { serveDownload, serveDownloadPage, serveReleaseMeta } from './releases';
+import { serveDownload, serveArchivePage, serveReleaseMeta } from './releases';
 import { handleCiRelease, handleCiReleaseAnnouncement } from './releases';
 import {
   handleDiscordCallback,
@@ -80,9 +80,13 @@ export default {
     if (url.pathname === '/auth/discord/callback') return handleDiscordCallback(req, env);
 
     if (url.pathname === '/downloads') {
+      // Legacy name
+      return Response.redirect(`${url.origin}/archive`, 308);
+    }
+    if (url.pathname === '/archive') {
       const access = await downloadAccess(req, env);
-      if (!access.authenticated) return loginRedirect('/downloads');
-      return serveDownloadPage(env, access.canDownloadSource);
+      if (!access.authenticated) return loginRedirect('/archive');
+      return serveArchivePage(env, access.canDownloadSource);
     }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);

@@ -17,7 +17,7 @@ function readCookie(req: Request, name: string): string | null {
 }
 
 function safeReturnTo(raw: string | null): string {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/downloads';
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/archive';
   return raw;
 }
 

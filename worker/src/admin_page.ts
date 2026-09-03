@@ -9,14 +9,16 @@ const PAGE = `<!doctype html>
 <title>Aura · admin</title>
 <style>
   :root {
-    --bg: #0f0f16; --panel: #17171f; --panel2: #1d1d28; --line: #2a2a3a;
-    --text: #e8e8f0; --dim: #9a9ab0; --accent: #8b5cf6; --accent2: #a78bfa;
-    --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+    color-scheme: dark;
+    --bg: oklch(0.141 0 0); --panel: oklch(0.18 0 0); --panel2: oklch(0.22 0 0); --line: oklch(1 0 0 / 0.10);
+    --text: oklch(0.985 0 0); --dim: oklch(0.646 0 0); --accent: #d9ff65; --accent2: #c7f04f;
+    --ok: oklch(0.72 0.18 152); --warn: oklch(0.8 0.17 80); --bad: oklch(0.68 0.21 25);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background: var(--bg); color: var(--text);
-    font-family: "Segoe UI", system-ui, sans-serif; min-height: 100vh;
+    font-family: "Inter", ui-sans-serif, system-ui, "Segoe UI", sans-serif; min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
   }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 80px; }
   h1 { font-size: 24px; letter-spacing: 0.5px; }
@@ -41,7 +43,7 @@ const PAGE = `<!doctype html>
   .row { display: flex; gap: 10px; align-items: center; }
   .row input { flex: 1; }
   button {
-    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    background: var(--accent); color: oklch(0.18 0 0); border: none; border-radius: 8px;
     padding: 10px 16px; font-size: 14px; cursor: pointer; font-weight: 600;
   }
   button:hover { background: var(--accent2); }
