@@ -2,7 +2,7 @@ name: aura
 description: "Aura — DPI-resistant NaiveProxy VPN with a native privileged helper."
 publish_to: 'none'
 
-version: 26.2.0+1
+version: 26.2.1+1
 
 environment:
   sdk: ^3.12.2
