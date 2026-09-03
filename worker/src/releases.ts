@@ -354,6 +354,10 @@ export async function serveDownloadPage(env: Env, canDownloadSource: boolean): P
     }
   }
 
+  // Re-sort on read so a stale index (e.g. written before the dev-build
+  // prerelease ordering was introduced) never shows a -dev build as latest.
+  versions.sort((a, b) => compareVersionsDescending(a.version, b.version));
+
   const manifests = await Promise.all(
     versions.slice(0, 50).map((entry) => readArchiveManifest(env.RELEASES, entry.version))
   );

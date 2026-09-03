@@ -532,4 +532,26 @@ describe('Discord-gated downloads', () => {
     expect(downloaded.headers.get('content-type')).toBe('application/x-apple-diskimage');
     expect(downloaded.headers.get('content-disposition')).toContain('aura-macos-arm64.dmg');
   });
+
+  it('re-sorts a stale index so a dev build never shows as latest', async () => {
+    const stable = 'v26.0.1';
+    const dev = 'v26.0.1-dev.9';
+    await publishArtifact(stable, 'windows', 'stable-body');
+    await publishArtifact(dev, 'windows', 'dev-body');
+
+    // Simulate an index written by the old ordering (dev on top).
+    await env.RELEASES.put(
+      'archive/index.json',
+      JSON.stringify({ versions: [{ version: dev, uploaded: Date.now() }, { version: stable, uploaded: Date.now() }] })
+    );
+
+    const cookie = await downloadSessionCookie('standard');
+    const html = await (await worker.fetch(request('/downloads', { headers: { cookie } }), env)).text();
+    const latest = html.slice(html.indexOf('class="latest-release"'), html.indexOf('class="older-releases"'));
+
+    expect(html.indexOf('<h2>v26.0.1</h2>')).toBeGreaterThan(-1);
+    expect(latest).toContain('<h2>v26.0.1</h2>');
+    expect(latest).not.toContain('<h2>v26.0.1-dev.9</h2>');
+    expect(html.indexOf('<h2>v26.0.1</h2>')).toBeLessThan(html.indexOf('<h2>v26.0.1-dev.9</h2>'));
+  });
 });
