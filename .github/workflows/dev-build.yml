@@ -179,7 +179,7 @@ jobs:
     needs: [windows, macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,6 +199,7 @@ jobs:
           # means they land in the version archive without touching 'latest'.
           base="$(sed -n 's/^version: \([0-9]*\)\.\([0-9]*\)\.\([0-9]*\).*/\1.\2.\3/p' app/pubspec.yaml | head -1)"
           version="v${base}-dev.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
 
           git archive --format=zip --prefix="aura-${version}/" --output aura-source.zip HEAD
 
@@ -222,3 +223,17 @@ jobs:
           publish windows dist/dev-windows-amd64/dev-windows-amd64.zip
           publish macos dist/dev-macos-arm64/dev-macos-arm64.dmg
           publish source aura-source.zip
+
+      - name: Publish dev GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "${VERSION}" \
+            --notes "Development build from the \`dev\` branch." \
+            dist/dev-windows-amd64/dev-windows-amd64.zip \
+            dist/dev-macos-arm64/dev-macos-arm64.dmg \
+            aura-source.zip

@@ -74,6 +74,16 @@ describe('release workflow', () => {
     expect(devBuild).not.toContain('/v1/releases/announce');
   });
 
+  it('attaches dev builds to a prerelease on GitHub', () => {
+    expect(devBuild).toContain('contents: write');
+    expect(devBuild).toContain('GH_TOKEN: ${{ github.token }}');
+    expect(devBuild).toContain('gh release create');
+    expect(devBuild).toContain('--prerelease');
+    expect(devBuild).toContain('--target "$GITHUB_SHA"');
+    expect(devBuild).toContain('dist/dev-windows-amd64/dev-windows-amd64.zip');
+    expect(devBuild).toContain('dist/dev-macos-arm64/dev-macos-arm64.dmg');
+  });
+
   it('backfills every historical binary and generated source without leaving an old release as latest', () => {
     for (const tag of [
       'v0.1.0', 'v0.2.0', 'v0.2.1', 'v0.2.2', 'v0.2.3',
