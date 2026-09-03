@@ -22,6 +22,6 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks", "blocking"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "native-tls", "socks", "blocking"], default-features = false }
 chrono = "0.4"
 
