@@ -130,6 +130,28 @@ async fn core_log() -> String {
         .unwrap_or_else(|_| "aura-core is not running".to_string())
 }
 
+#[tauri::command]
+fn core_detected() -> bool {
+    core::detected()
+}
+
+#[tauri::command]
+async fn core_install(app: tauri::AppHandle) -> Result<(), String> {
+    let data = app.path().app_data_dir().unwrap_or_default();
+    let res = app.path().resource_dir().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || core::install(&data, &res))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn core_uninstall(app: tauri::AppHandle) -> Result<(), String> {
+    let data = app.path().app_data_dir().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || core::uninstall(&data))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 // ---- Monthly data budget persistence (ports UsageTracker) -------------------
 
 #[tauri::command(rename_all = "snake_case")]
@@ -163,6 +185,9 @@ pub fn run() {
             core_status,
             core_stats,
             core_log,
+            core_detected,
+            core_install,
+            core_uninstall,
             usage_month_used,
             usage_add,
         ])

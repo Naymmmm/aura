@@ -11,8 +11,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { coreLog, getLastApiError } from "@/lib/api";
 import type { Aura } from "@/state/useAura";
-import { ShieldBan, ListPlus, Database, X } from "lucide-react";
+import { ShieldBan, ListPlus, Database, X, HardDrive, Bug } from "lucide-react";
 
 export function SettingsSheet({
   aura,
@@ -24,10 +25,16 @@ export function SettingsSheet({
   onOpenChange: (open: boolean) => void;
 }) {
   const [newException, setNewException] = useState("");
+  const [coreLogText, setCoreLogText] = useState<string | null>(null);
 
   function addException() {
     aura.addException(newException);
     setNewException("");
+  }
+
+  async function loadCoreLog() {
+    const t = await coreLog().catch(() => "could not read aura-core log");
+    setCoreLogText(t);
   }
 
   return (
@@ -112,6 +119,66 @@ export function SettingsSheet({
                 )}
               </div>
             </section>
+            {/* aura-core helper */}
+            <section className="flex items-start gap-3">
+              <span className="mt-0.5 flex size-9 items-center justify-center rounded-lg bg-secondary/20 text-secondary-foreground">
+                <HardDrive className="size-5" />
+              </span>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold">aura-core helper</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  The privileged daemon that runs the TUN tunnel.
+                </p>
+                <p className="mt-2 text-xs">
+                  Status:{" "}
+                  <span className={aura.coreDetected ? "font-semibold text-emerald-400" : "font-semibold text-amber-400"}>
+                    {aura.coreDetected ? "Installed" : "Not detected"}
+                  </span>
+                </p>
+                <div className="mt-3 flex gap-2">
+                  {aura.coreDetected ? (
+                    <Button variant="destructive" size="sm" onClick={() => aura.uninstallCore()}>
+                      Uninstall
+                    </Button>
+                  ) : (
+                    <Button size="sm" onClick={() => aura.installCore()}>
+                      Install
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            {/* Debug — unlocked by tapping the logo 5x */}
+            {aura.debugMode && (
+              <section className="flex items-start gap-3">
+                <span className="mt-0.5 flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Bug className="size-5" />
+                </span>
+                <div className="flex-1">
+                  <h3 className="text-sm font-bold">Debug</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Last API error:{" "}
+                    <code className="rounded bg-muted/40 px-1 py-0.5 text-[11px]">
+                      {getLastApiError() ?? "none"}
+                    </code>
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={loadCoreLog}
+                  >
+                    Load aura-core log
+                  </Button>
+                  {coreLogText && (
+                    <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/40 p-2.5 font-mono text-[10px] text-muted-foreground">
+                      {coreLogText}
+                    </pre>
+                  )}
+                </div>
+              </section>
+            )}
           </div>
         </ScrollArea>
 

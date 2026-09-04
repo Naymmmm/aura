@@ -151,6 +151,9 @@ export const coreStop = () => call<boolean>("core_stop");
 export const coreStatus = () => call<CoreStatus>("core_status");
 export const coreStats = () => call<CoreStats>("core_stats");
 export const coreLog = () => call<string>("core_log");
+export const coreDetected = () => call<boolean>("core_detected");
+export const coreInstall = () => call<void>("core_install");
+export const coreUninstall = () => call<void>("core_uninstall");
 
 export const usageMonthUsed = (accountId: string) =>
   call<number>("usage_month_used", { account_id: accountId });

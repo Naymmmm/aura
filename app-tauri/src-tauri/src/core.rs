@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -311,4 +313,200 @@ pub fn recent_log() -> String {
 #[allow(dead_code)]
 pub fn _kind_string(kind: AuthErrorKind) -> &'static str {
     kind.as_str()
+}
+
+// ---- aura-core detection, install, uninstall --------------------------------
+
+/// True when the privileged aura-core helper is installed and reachable.
+pub fn detected() -> bool {
+    if find_token().is_none() {
+        return false;
+    }
+    matches!(
+        request("GET", "/v1/status", None).map(|r| r.status().as_u16()),
+        Ok(200)
+    )
+}
+
+fn random_token() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut h = nanos ^ ((std::process::id() as u128) << 64);
+    let mut out = String::with_capacity(64);
+    for _ in 0..32 {
+        h = h
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        out.push_str(&format!("{:02x}", (h >> 64) as u8));
+    }
+    out
+}
+
+fn write_token(app_data_dir: &Path) -> Result<std::path::PathBuf, String> {
+    let dir = app_data_dir.join("aura-core");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join("api.token");
+    std::fs::write(&file, random_token()).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        let _ = Command::new("chmod").arg("600").arg(&file).status();
+    }
+    Ok(file)
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Install the privileged helper from the binaries bundled as resources.
+pub fn install(app_data_dir: &Path, resource_dir: &Path) -> Result<(), String> {
+    let token_file = write_token(app_data_dir)?;
+    let bundle = resource_dir.join("aura-core");
+    let (core_name, naive_name) = if cfg!(windows) {
+        ("aura-core.exe", "naive.exe")
+    } else {
+        ("aura-core", "naive")
+    };
+    let aura = bundle.join(core_name);
+    let naive = bundle.join(naive_name);
+    if !aura.is_file() || !naive.is_file() {
+        return Err("aura-core binaries are not bundled in this build".to_string());
+    }
+    if cfg!(windows) {
+        install_windows(&aura, &naive, &token_file)
+    } else if cfg!(target_os = "macos") {
+        install_macos(&aura, &naive, &token_file)
+    } else {
+        Err("unsupported platform".to_string())
+    }
+}
+
+fn install_macos(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), String> {
+    let install = "/Library/PrivilegedHelperTools/com.copal.aura.core";
+    let runtime = "/Library/Application Support/Aura Core";
+    let plist = "/Library/LaunchDaemons/com.copal.aura.core.plist";
+    let sh = format!(
+        "set -eu\n\
+         INSTALL={}\nRUNTIME={}\nPLIST={}\nTOKEN={}\nAU={}\nNA={}\n\
+         mkdir -p \"$INSTALL\" \"$RUNTIME\"\nrm -rf \"$INSTALL\"\nmkdir -p \"$INSTALL\"\n\
+         cp \"$AU\" \"$INSTALL/aura-core\"\ncp \"$NA\" \"$INSTALL/naive\"\n\
+         chmod 755 \"$INSTALL/aura-core\" \"$INSTALL/naive\"\nchown -R root:wheel \"$INSTALL\"\n\
+         chmod 700 \"$RUNTIME\"; chown root:wheel \"$RUNTIME\"\n\
+         launchctl bootout system/com.copal.aura.core 2>/dev/null || true\n\
+         cat > \"$PLIST\" <<EOF\n\
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\"><dict>\n\
+  <key>Label</key><string>com.copal.aura.core</string>\n\
+  <key>ProgramArguments</key><array>\n\
+    <string>$INSTALL/aura-core</string>\n\
+    <string>serve</string><string>--state-dir</string><string>$RUNTIME</string>\n\
+    <string>--token-file</string><string>$TOKEN</string>\n\
+  </array>\n\
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n\
+  <key>ProcessType</key><string>Interactive</string>\n\
+  <key>StandardOutPath</key><string>/var/log/aura-core.log</string>\n\
+  <key>StandardErrorPath</key><string>/var/log/aura-core.log</string>\n\
+</dict></plist>\n\
+EOF\n\
+         chmod 644 \"$PLIST\"\nchown root:wheel \"$PLIST\"\nlaunchctl bootstrap system \"$PLIST\"\n",
+        shell_quote(install),
+        shell_quote(runtime),
+        shell_quote(plist),
+        token_file.display(),
+        aura.display(),
+        naive.display()
+    );
+    let esc = sh.replace('\\', "\\\\").replace('"', "\\\"");
+    let apple = format!("do shell script \"{}\" with administrator privileges", esc);
+    let status = Command::new("osascript")
+        .arg("-e")
+        .arg(&apple)
+        .status()
+        .map_err(|e| format!("osascript: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("admin install was cancelled or failed".to_string())
+    }
+}
+
+fn install_windows(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), String> {
+    let install = r"C:\Program Files\Aura Core";
+    let runtime = r"C:\ProgramData\Aura Core";
+    let task = "Aura Core Helper";
+    let ps = format!(
+        r#"
+$ErrorActionPreference='Stop'
+$install = '{install}'
+$runtime = '{runtime}'
+$taskName = '{task}'
+$tokenFile = '{token}'
+New-Item -ItemType Directory -Force -Path $install,$runtime | Out-Null
+& icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 600
+Copy-Item '{aura}' $install\aura-core.exe -Force
+Copy-Item '{naive}' $install\naive.exe -Force
+$args = 'serve --state-dir "' + $runtime + '" --token-file "' + $tokenFile + '"'
+Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute "$install\aura-core.exe" -Argument $args
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
+Start-ScheduledTask -TaskName $taskName
+"#,
+        install = install,
+        runtime = runtime,
+        task = task,
+        token = token_file.display(),
+        aura = aura.display(),
+        naive = naive.display()
+    );
+    // Re-launch elevated via Start-Process -Verb RunAs.
+    let inner = format!(
+        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{}\"",
+        ps.replace('"', "\\\"")
+    );
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Process powershell.exe -Wait -Verb RunAs -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',('\"' + \"\" \"\" + $inner + \"\" \"\" + '\"'))",
+        ])
+        .status()
+        .map_err(|e| format!("elevation: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("admin install was cancelled or failed".to_string())
+    }
+}
+
+/// Stop + remove the privileged helper.
+pub fn uninstall(app_data_dir: &Path) -> Result<(), String> {
+    // Best-effort stop via the daemon API.
+    let _ = request("POST", "/v1/stop", None);
+    // Remove the token so the app stops talking to (and detecting) the helper.
+    let _ = std::fs::remove_file(app_data_dir.join("aura-core/api.token"));
+    let _ = std::fs::remove_dir_all(app_data_dir.join("aura-core"));
+    if cfg!(target_os = "macos") {
+        let _ = Command::new("launchctl").args(["bootout", "system/com.copal.aura.core"]).status();
+        let _ = std::fs::remove_file("/Library/LaunchDaemons/com.copal.aura.core.plist");
+    } else if cfg!(windows) {
+        let _ = Command::new("powershell.exe").args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Stop-ScheduledTask -TaskName 'Aura Core Helper' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'Aura Core Helper' -Confirm:$false -ErrorAction SilentlyContinue; Remove-Item 'C:\\Program Files\\Aura Core' -Recurse -Force -ErrorAction SilentlyContinue",
+        ])
+        .status();
+    }
+    Ok(())
 }

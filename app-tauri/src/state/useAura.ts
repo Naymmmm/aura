@@ -9,6 +9,9 @@ import {
   checkUpdate,
   clearAuth,
   closeSession,
+  coreDetected,
+  coreInstall,
+  coreUninstall,
   coreStart,
   coreStats,
   coreStop,
@@ -120,6 +123,31 @@ export function useAura() {
   const [blocked, setBlocked] = useState(false);
   const [egressIp, setEgressIp] = useState<string | null>(null);
   const [proxyAddr, setProxyAddr] = useState<string | null>(null);
+  const [debugMode, setDebugModeState] = useState<boolean>(
+    () => localStorage.getItem("aura.debug") === "1",
+  );
+  const [coreDetectedState, setCoreDetectedState] = useState<boolean>(true);
+
+  const detectCore = useCallback(async () => {
+    const d = await coreDetected().catch(() => false);
+    setCoreDetectedState(d);
+  }, []);
+  const installCore = useCallback(async () => {
+    const ok = await coreInstall().then(() => true).catch(() => false);
+    await detectCore();
+    return ok;
+  }, [detectCore]);
+  const uninstallCore = useCallback(async () => {
+    await coreUninstall().catch(() => {});
+    await detectCore();
+  }, [detectCore]);
+  const toggleDebug = useCallback(() => {
+    setDebugModeState((s) => {
+      const n = !s;
+      localStorage.setItem("aura.debug", n ? "1" : "0");
+      return n;
+    });
+  }, []);
 
   // Refs mirror the values timers/async need so they never read stale state.
   const sessionRef = useRef<SessionInfo | null>(null);
@@ -572,6 +600,7 @@ export function useAura() {
 
   useEffect(() => {
     void init();
+    void detectCore();
     return () => {
       if (statsTimer.current) clearInterval(statsTimer.current);
       if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
@@ -634,6 +663,11 @@ export function useAura() {
     blocked,
     egressIp,
     proxyAddr,
+    debugMode,
+    coreDetected: coreDetectedState,
+    toggleDebug,
+    installCore,
+    uninstallCore,
     setKillSwitch: setKillSwitchSetting,
     addException,
     removeException,
