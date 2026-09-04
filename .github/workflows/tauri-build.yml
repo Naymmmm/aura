@@ -127,17 +127,3 @@ jobs:
           publish windows "$(ls dist/tauri-windows-amd64/*.zip | head -1)"
           publish macos "$(ls dist/tauri-macos-arm64/*.dmg | head -1)"
           publish source aura-source.zip
-
-      - name: Publish tauri-dev GitHub prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${VERSION}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "${VERSION}" \
-            --notes "Tauri (React + Rust) port — development build from the \`tauri\` branch." \
-            dist/tauri-windows-amd64/*.zip \
-            dist/tauri-macos-arm64/*.dmg \
-            aura-source.zip
