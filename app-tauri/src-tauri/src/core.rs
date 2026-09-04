@@ -364,20 +364,15 @@ fn shell_quote(s: &str) -> String {
 /// Install the privileged helper from the binaries bundled as resources.
 pub fn install(app_data_dir: &Path, resource_dir: &Path) -> Result<(), String> {
     let token_file = write_token(app_data_dir)?;
-    let bundle = resource_dir.join("aura-core");
     let (core_name, naive_name) = if cfg!(windows) {
         ("aura-core.exe", "naive.exe")
     } else {
         ("aura-core", "naive")
     };
-    let aura = bundle.join(core_name);
-    let naive = bundle.join(naive_name);
-    if !aura.is_file() || !naive.is_file() {
-        return Err(
-            "aura-core installation packages can't be found, this build is corrupted, reinstall from website and try again"
-                .to_string(),
-        );
-    }
+    let (aura, naive) = find_bundle(resource_dir, core_name, naive_name).ok_or_else(|| {
+        "aura-core installation packages can't be found, this build is corrupted, reinstall from website and try again"
+            .to_string()
+    })?;
     if cfg!(windows) {
         install_windows(&aura, &naive, &token_file)
     } else if cfg!(target_os = "macos") {
@@ -385,6 +380,40 @@ pub fn install(app_data_dir: &Path, resource_dir: &Path) -> Result<(), String> {
     } else {
         Err("unsupported platform".to_string())
     }
+}
+
+/// Locate the bundled aura-core + naive binaries, wherever Tauri placed them.
+fn find_bundle(resource_dir: &Path, core: &str, naive: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let candidates = [
+        resource_dir.join("aura-core"),
+        resource_dir.join("resources").join("aura-core"),
+    ];
+    for dir in candidates {
+        let a = dir.join(core);
+        let n = dir.join(naive);
+        if a.is_file() && n.is_file() {
+            return Some((a, n));
+        }
+    }
+    find_recursive(resource_dir, core, naive)
+}
+
+fn find_recursive(dir: &Path, core: &str, naive: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if let Some(found) = find_recursive(&p, core, naive) {
+                return Some(found);
+            }
+        } else if p.file_name().and_then(|n| n.to_str()) == Some(core) {
+            let peer = p.parent()?.join(naive);
+            if peer.is_file() {
+                return Some((p, peer));
+            }
+        }
+    }
+    None
 }
 
 fn install_macos(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), String> {

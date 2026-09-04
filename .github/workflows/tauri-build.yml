@@ -30,6 +30,28 @@ jobs:
         working-directory: app-tauri
         run: npm ci
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: aura-core/go.mod
+
+      - name: Bundle aura-core + naive + wintun (windows)
+        shell: pwsh
+        run: |
+          $dir = "app-tauri\src-tauri\resources\aura-core"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Push-Location aura-core
+          go build -trimpath -ldflags "-s -w -H=windowsgui" -o "..\$dir\aura-core.exe" .
+          Pop-Location
+          $zip = "$env:RUNNER_TEMP\naive.zip"
+          Invoke-WebRequest "https://github.com/klzgrad/naiveproxy/releases/download/v$env:NAIVE_VERSION/naiveproxy-v$env:NAIVE_VERSION-win-x64.zip" -OutFile $zip
+          $ex = "$env:RUNNER_TEMP\ex"
+          Expand-Archive $zip $ex
+          Get-ChildItem "$ex" -Directory | Select-Object -First 1 | ForEach-Object { Copy-Item "$($_.FullName)\naive.exe" "$dir\naive.exe" -Force }
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$env:RUNNER_TEMP\wintun.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wintun.zip" "$env:RUNNER_TEMP\w"
+          Copy-Item "$env:RUNNER_TEMP\w\wintun\bin\amd64\wintun.dll" "$dir\wintun.dll" -Force
+
       - name: Build Tauri app (portable, no installer)
         working-directory: app-tauri
         run: npx tauri build --no-bundle
@@ -70,6 +92,20 @@ jobs:
       - name: Install frontend deps
         working-directory: app-tauri
         run: npm ci
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: aura-core/go.mod
+
+      - name: Bundle aura-core + naive (macos)
+        run: |
+          dir="app-tauri/src-tauri/resources/aura-core"
+          mkdir -p "$dir"
+          (cd aura-core && go build -trimpath -ldflags "-s -w" -o "../$dir/aura-core" .)
+          NAIVE_DIR="$RUNNER_TEMP/naiveproxy"; mkdir -p "$NAIVE_DIR"
+          curl -fsSL "https://github.com/klzgrad/naiveproxy/releases/download/v${NAIVE_VERSION}/naiveproxy-v${NAIVE_VERSION}-mac-arm64-arm64.tar.xz" | tar -xJ -C "$NAIVE_DIR" --strip-components=1
+          cp "$NAIVE_DIR/naive" "$dir/naive"
 
       - name: Build Tauri app (DMG)
         working-directory: app-tauri
