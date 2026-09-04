@@ -288,8 +288,11 @@ pub async fn open_browser(url: &str) -> Result<(), ApiError> {
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).status()
     } else if cfg!(target_os = "windows") {
-        // `open` is macOS-only; on Windows open the default browser via start.
-        std::process::Command::new("cmd").args(["/C", "start", "", url]).status()
+        // `open` is macOS-only and `cmd /C start` mangles `&` in OAuth URLs.
+        // rundll32 hands the URL to the default handler untouched (as Flutter did).
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .status()
     } else {
         std::process::Command::new("xdg-open").arg(url).status()
     }
