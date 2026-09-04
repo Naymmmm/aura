@@ -373,7 +373,10 @@ pub fn install(app_data_dir: &Path, resource_dir: &Path) -> Result<(), String> {
     let aura = bundle.join(core_name);
     let naive = bundle.join(naive_name);
     if !aura.is_file() || !naive.is_file() {
-        return Err("aura-core binaries are not bundled in this build".to_string());
+        return Err(
+            "aura-core installation packages can't be found, this build is corrupted, reinstall from website and try again"
+                .to_string(),
+        );
     }
     if cfg!(windows) {
         install_windows(&aura, &naive, &token_file)
