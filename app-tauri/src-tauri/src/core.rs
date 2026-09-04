@@ -500,17 +500,22 @@ Start-ScheduledTask -TaskName $taskName
         aura = aura.display(),
         naive = naive.display()
     );
-    // Re-launch elevated via Start-Process -Verb RunAs.
-    let inner = format!(
-        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{}\"",
-        ps.replace('"', "\\\"")
+    // Write the script to a temp file the elevated process can read, then
+    // launch it elevated via Start-Process -Verb RunAs (UAC prompt).
+    let script_path = std::env::temp_dir().join("aura-core-install.ps1");
+    std::fs::write(&script_path, &ps).map_err(|e| e.to_string())?;
+    let launch = format!(
+        "Start-Process powershell.exe -Wait -Verb RunAs -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','{}'",
+        script_path.display()
     );
     let status = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
             "-Command",
-            "Start-Process powershell.exe -Wait -Verb RunAs -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',('\"' + \"\" \"\" + $inner + \"\" \"\" + '\"'))",
+            launch.as_str(),
         ])
         .status()
         .map_err(|e| format!("elevation: {e}"))?;
