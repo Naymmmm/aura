@@ -285,10 +285,15 @@ pub fn platform_key() -> &'static str {
 
 /// Open a URL in the default browser, the same way the Flutter app did.
 pub async fn open_browser(url: &str) -> Result<(), ApiError> {
-    let status = std::process::Command::new("open")
-        .arg(url)
-        .status()
-        .map_err(|e| ApiError::new(AuthErrorKind::Network, e.to_string()))?;
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()
+    } else if cfg!(target_os = "windows") {
+        // `open` is macOS-only; on Windows open the default browser via start.
+        std::process::Command::new("cmd").args(["/C", "start", "", url]).status()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).status()
+    }
+    .map_err(|e| ApiError::new(AuthErrorKind::Network, e.to_string()))?;
     if status.success() {
         Ok(())
     } else {
