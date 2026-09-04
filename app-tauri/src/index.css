@@ -96,3 +96,15 @@
     @apply font-sans;
   }
 }
+
+/* The custom UI owns its scrollbars — hide the native ones so they don't
+   break the illusion on Windows/macOS. */
+* {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* Chrome/Safari/Edge */
+}

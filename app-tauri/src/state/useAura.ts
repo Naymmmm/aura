@@ -128,6 +128,8 @@ export function useAura() {
     () => localStorage.getItem("aura.debug") === "1",
   );
   const [coreDetectedState, setCoreDetectedState] = useState<boolean>(true);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const dismissInstallError = useCallback(() => setInstallError(null), []);
 
   const detectCore = useCallback(async () => {
     const d = await coreDetected().catch(() => false);
@@ -138,7 +140,7 @@ export function useAura() {
       await coreInstall();
       toast.success("aura-core installed");
     } catch (e) {
-      toast.error(typeof e === "string" ? e : "aura-core install failed");
+      setInstallError(typeof e === "string" ? e : "aura-core install failed");
     }
     await detectCore();
   }, [detectCore]);
@@ -673,6 +675,8 @@ export function useAura() {
     toggleDebug,
     installCore,
     uninstallCore,
+    installError,
+    dismissInstallError,
     setKillSwitch: setKillSwitchSetting,
     addException,
     removeException,

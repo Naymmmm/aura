@@ -3,6 +3,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { LoginView } from "@/components/LoginView";
 import { HomePage } from "@/components/HomePage";
 import { LogsPage } from "@/components/LogsPage";
+import { ErrorDialog } from "@/components/ErrorDialog";
 import { useAura } from "@/state/useAura";
 
 function App() {
@@ -21,6 +22,9 @@ function App() {
         />
       )}
       {showLogs && <LogsPage aura={aura} onClose={() => setShowLogs(false)} />}
+      {aura.installError && (
+        <ErrorDialog message={aura.installError} onClose={aura.dismissInstallError} />
+      )}
       <Toaster position="top-center" />
     </>
   );
