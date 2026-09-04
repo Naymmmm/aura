@@ -3,6 +3,7 @@
 // network/filesystem/engine boundary (see src/lib/api.ts).
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   authPoll,
   authStart,
@@ -133,9 +134,13 @@ export function useAura() {
     setCoreDetectedState(d);
   }, []);
   const installCore = useCallback(async () => {
-    const ok = await coreInstall().then(() => true).catch(() => false);
+    try {
+      await coreInstall();
+      toast.success("aura-core installed");
+    } catch (e) {
+      toast.error(typeof e === "string" ? e : "aura-core install failed");
+    }
     await detectCore();
-    return ok;
   }, [detectCore]);
   const uninstallCore = useCallback(async () => {
     await coreUninstall().catch(() => {});
