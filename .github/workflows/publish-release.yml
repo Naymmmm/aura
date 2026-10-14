@@ -32,6 +32,16 @@ jobs:
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Keep the Linux download under the 95 MB upload cap
+        run: |
+          set -euo pipefail
+          # The archive takes the AppImage; the .deb ships on the GitHub release.
+          d=dist/aura-linux-x64
+          if unzip -l "$d/aura-linux-x64.zip" | grep -q '\.deb$'; then
+            (cd "$d" && unzip -q -o aura-linux-x64.zip '*.deb' && zip -q -d aura-linux-x64.zip '*.deb')
+          fi
+          ls -l "$d"
+
       - name: Validate release changelog
         run: node worker/scripts/validate-release-changelog.mjs "releases/${{ inputs.version }}.md" "${{ inputs.version }}"
 
@@ -82,4 +92,5 @@ jobs:
           files: |
             dist/**/*.zip
             dist/**/*.dmg
+            dist/**/*.deb
             aura-source.zip

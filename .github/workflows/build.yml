@@ -212,12 +212,17 @@ jobs:
       - name: Zip the Linux bundles
         run: |
           b=app-tauri/src-tauri/target/release/bundle
-          zip -j aura-linux-x64.zip $b/appimage/*.AppImage $b/deb/*.deb
+          # The archive upload is capped at 95 MB, so the zip carries only the
+          # AppImage; the .deb ships alongside it on the GitHub release.
+          zip -j aura-linux-x64.zip $b/appimage/*.AppImage
+          cp $b/deb/*.deb .
 
       - uses: actions/upload-artifact@v4
         with:
           name: aura-linux-x64
-          path: aura-linux-x64.zip
+          path: |
+            aura-linux-x64.zip
+            *.deb
 
   publish:
     needs: [windows, macos, linux]
@@ -293,4 +298,5 @@ jobs:
           files: |
             dist/**/*.zip
             dist/**/*.dmg
+            dist/**/*.deb
             aura-source.zip
