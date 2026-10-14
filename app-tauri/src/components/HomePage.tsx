@@ -1,209 +1,62 @@
-import * as React from "react";
-import { useState, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { AuraMark } from "@/components/AuraMark";
-import { ServerTile } from "@/components/ServerTile";
-import { SettingsSheet } from "@/components/SettingsSheet";
 import { fmtBytes } from "@/lib/format";
-import * as lines from "@/lib/lines";
 import { cn } from "@/lib/utils";
 import { AUTO_TAG, type Aura, type Phase } from "@/state/useAura";
-import type { ServerInfo } from "@/lib/api";
 import {
-  CloudDownload,
-  Hourglass,
-  Lock,
-  LogOut,
-  Power,
-  RefreshCw,
-  ShieldCheck,
-  TriangleAlert,
-  ArrowUp,
-  ArrowDown,
-  Router,
+  Check,
   Download,
-  Settings2,
-  ShieldBan,
+  Loader2,
+  RefreshCw,
+  Settings,
+  Sparkles,
+  TriangleAlert,
   Waypoints,
-  Globe,
 } from "lucide-react";
 
-const GB = 1024 * 1024 * 1024;
-void GB;
-
-function planLabel(plan: string) {
-  if (plan === "free_trial") return "FREE TRIAL";
-  if (plan === "standard") return "STANDARD";
-  return "NONE";
-}
-
-const phaseStyle: Record<Phase, { color: string; icon: React.ReactNode; line: string; sub: string }> = {
-  loggedOut: {
-    color: "text-muted-foreground",
-    icon: <Lock className="size-9" />,
-    line: lines.pick(lines.loggedOut),
-    sub: "log in to unlock the aura",
-  },
-  disconnected: {
-    color: "text-muted-foreground",
-    icon: <Power className="size-9" />,
-    line: lines.pick(lines.disconnected),
-    sub: "tap to ascend",
-  },
-  fetchingConfig: {
-    color: "text-secondary-foreground",
-    icon: <CloudDownload className="size-9" />,
-    line: "fetching the config...",
-    sub: "checking in with api.copal.run",
-  },
-  connecting: {
-    color: "text-secondary-foreground",
-    icon: <Hourglass className="size-9" />,
-    line: lines.pick(lines.connecting),
-    sub: "establishing the tunnel",
-  },
-  connected: {
-    color: "text-primary",
-    icon: <ShieldCheck className="size-9" />,
-    line: lines.pick(lines.connected),
-    sub: "via the aura — 0 down",
-  },
-  error: {
-    color: "text-destructive",
-    icon: <TriangleAlert className="size-9" />,
-    line: lines.pick(lines.error),
-    sub: "something broke fr",
-  },
+const STATUS: Record<Phase, { label: string; dot: string }> = {
+  loggedOut: { label: "Signed out", dot: "bg-muted-foreground" },
+  disconnected: { label: "Disconnected", dot: "bg-muted-foreground" },
+  fetchingConfig: { label: "Loading", dot: "bg-amber-400 animate-pulse" },
+  connecting: { label: "Connecting", dot: "bg-amber-400 animate-pulse" },
+  connected: { label: "Connected", dot: "bg-primary" },
+  error: { label: "Not connected", dot: "bg-destructive" },
 };
 
-export function HomePage({ aura, onOpenLogs, onDebug }: { aura: Aura; onOpenLogs: () => void; onDebug: () => void }) {
-  const { phase, serverConfig, selectedServerTag, activeServer, latencies } = aura;
-  const busy = phase === "connecting" || phase === "fetchingConfig";
-  const isConnected = phase === "connected";
-  const servers = serverConfig?.servers ?? [];
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const autoServer: ServerInfo = { tag: AUTO_TAG, host: "", ip: "", username: "", password: "" };
-
-  const status = React.useMemo(() => {
-    const base = phaseStyle[phase];
-    if (phase === "connected") {
-      return {
-        ...base,
-        line: lines.pick(lines.connected, (activeServer ?? "aura").length),
-        sub: `via ${activeServer ?? "?"} — ${fmtBytes(aura.downBytes)} down`,
-      };
-    }
-    if (phase === "error") {
-      return { ...base, sub: aura.statusLine ?? "something broke fr" };
-    }
-    return base;
-  }, [phase, activeServer, aura.statusLine, aura.egressIp, aura.proxyAddr]);
-
-  return (
-    <div className="flex h-screen flex-col bg-background">
-      <Header aura={aura} onOpenLogs={onOpenLogs} onOpenSettings={() => setSettingsOpen(true)} onDebug={onDebug} />
-
-      <div className="flex-1 overflow-y-auto px-5 pb-6">
-        {!aura.coreDetected && (
-          <div className="mb-3 mt-1 flex items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
-            <span className="font-semibold text-amber-400">aura-core not detected</span>
-            <span className="text-muted-foreground">Install the privileged helper to connect.</span>
-            <button
-              type="button"
-              onClick={() => aura.installCore()}
-              className="ml-auto rounded-lg bg-primary px-2.5 py-1 font-bold text-primary-foreground"
-            >
-              Install
-            </button>
-          </div>
-        )}
-        <StatusCard aura={aura} busy={busy} isConnected={isConnected} status={status} />
-
-        <div className="mt-4 flex items-center gap-2">
-          <StatChip icon={<ArrowUp className="size-3.5" />} text={fmtBytes(aura.upBytes)} />
-          <StatChip icon={<ArrowDown className="size-3.5" />} text={fmtBytes(aura.downBytes)} />
-          {activeServer && (
-            <StatChip icon={<Router className="size-3.5" />} text={`${activeServer} locked in`} />
-          )}
-          {aura.proxyAddr && (
-            <StatChip icon={<Waypoints className="size-3.5" />} text={`socks5 ${aura.proxyAddr}`} />
-          )}
-          {aura.egressIp && (
-            <StatChip icon={<Globe className="size-3.5" />} text={`egress ${aura.egressIp}`} />
-          )}
-        </div>
-
-        <BudgetBar aura={aura} />
-
-        <div className="mt-4 flex items-center">
-          <h2 className="text-sm font-medium">servers</h2>
-          <span className="ml-2 text-xs text-muted-foreground">
-            {isConnected ? "locked while connected" : "choose one"}
-          </span>
-          <button
-            type="button"
-            onClick={() => aura.refreshConfig()}
-            disabled={busy}
-            className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-            title="refresh config (bypasses cache)"
-          >
-            <RefreshCw className={cn("size-4", busy && "animate-spin")} />
-          </button>
-        </div>
-
-        {servers.length === 0 ? (
-          <p className="mt-6 text-center text-sm text-muted-foreground">
-            {phase === "error" ? "no config loaded — tap refresh. blame the cloud, not me fr" : "no servers yet — press the big button"}
-          </p>
-        ) : (
-          <div className="mt-3 flex flex-col gap-2">
-            <ServerTile
-              server={autoServer}
-              latencyMs={undefined}
-              isActive={activeServer === AUTO_TAG}
-              isSelected={selectedServerTag === AUTO_TAG}
-              locked={isConnected || phase === "connecting"}
-              onTap={() => aura.selectServer(AUTO_TAG)}
-            />
-            {servers.map((s) => (
-              <ServerTile
-                key={s.tag}
-                server={s}
-                latencyMs={latencies[s.tag]}
-                isActive={activeServer === s.tag}
-                isSelected={selectedServerTag === s.tag}
-                locked={isConnected || phase === "connecting"}
-                onTap={() => aura.selectServer(s.tag)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {aura.blocked && (
-        <div className="flex items-center gap-2 border-t border-destructive/30 bg-destructive/10 px-5 py-2.5 text-xs font-medium text-destructive">
-          <ShieldBan className="size-4" />
-          Kill switch engaged — traffic is blocked. Reconnect or turn it off in settings.
-        </div>
-      )}
-
-      <SettingsSheet aura={aura} open={settingsOpen} onOpenChange={setSettingsOpen} />
-    </div>
-  );
+function serverName(tag: string) {
+  if (tag === AUTO_TAG) return "Automatic";
+  return tag.charAt(0).toUpperCase() + tag.slice(1);
 }
 
-function Header({
+export function HomePage({
   aura,
-  onOpenLogs,
   onOpenSettings,
   onDebug,
 }: {
   aura: Aura;
-  onOpenLogs: () => void;
   onOpenSettings: () => void;
   onDebug: () => void;
 }) {
-  const account = aura.accountStatus;
+  const { phase, serverConfig, selectedServerTag, activeServer, latencies } = aura;
+  const busy = phase === "connecting" || phase === "fetchingConfig";
+  const connected = phase === "connected";
+  const servers = serverConfig?.servers ?? [];
+
+  // Space toggles the connection from anywhere outside a text field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "BUTTON")) return;
+      e.preventDefault();
+      if (connected) void aura.disconnect();
+      else if (!busy) void aura.connect();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [aura, connected, busy]);
+
   const logoClicks = useRef(0);
   const pressLogo = () => {
     logoClicks.current += 1;
@@ -212,167 +65,304 @@ function Header({
       onDebug();
     }
   };
+
+  const status = STATUS[phase];
+  const latency = activeServer ? latencies[activeServer] : undefined;
+  const detail = connected
+    ? [latency !== undefined && `${latency} ms`, `↓ ${fmtBytes(aura.downBytes)}`, `↑ ${fmtBytes(aura.upBytes)}`]
+        .filter(Boolean)
+        .join(" · ")
+    : phase === "error"
+      ? aura.statusLine ?? "Something went wrong."
+      : busy
+        ? phase === "connecting"
+          ? "Setting up the tunnel…"
+          : "Loading your servers…"
+        : "Your traffic isn't protected.";
+
   return (
-    <div className="flex items-center gap-2.5 px-5 pb-2 pt-4">
-      <button
-        type="button"
-        onClick={pressLogo}
-        className="flex size-10 items-center justify-center rounded-[13px] bg-primary"
-        title="Aura"
-      >
-        <AuraMark size={28} color="var(--primary-foreground)" />
-      </button>
-      <div className="leading-tight">
-        <p className="text-base font-black tracking-[0.22em]">AURA</p>
-        <p className="text-[10px] font-bold tracking-[0.12em] text-muted-foreground">(v26.1.0)</p>
-        {account && (
-          <p className="text-[10px] font-extrabold tracking-wide text-primary">
-            {planLabel(account.plan)} • {account.budget_gb} GB • {account.display_name}
+    <div className="flex h-screen flex-col bg-background">
+      {/* Top bar */}
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border/60 px-4">
+        <button type="button" onClick={pressLogo} className="flex items-center gap-2" title="Aura">
+          <span className="flex size-6 items-center justify-center rounded-md bg-primary">
+            <AuraMark size={16} color="var(--primary-foreground)" />
+          </span>
+          <span className="text-sm font-semibold">Aura</span>
+        </button>
+        <div className="ml-auto flex items-center gap-1">
+          {aura.updateVersion && (
+            <button
+              type="button"
+              onClick={() => toast.info(`${aura.updateVersion} is out — download it from api.copal.run/archive`)}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
+            >
+              <Download className="size-3.5" />
+              Update
+            </button>
+          )}
+          <IconButton title="Settings" onClick={onOpenSettings}>
+            <Settings className="size-4" />
+          </IconButton>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-y-auto">
+        {/* Status */}
+        <section className="px-4 pb-4 pt-5">
+          <div className="flex items-center gap-2">
+            <span className={cn("size-2 rounded-full", status.dot)} />
+            <span className="text-base font-semibold">
+              {status.label}
+              {connected && activeServer && (
+                <span className="text-muted-foreground"> · {serverName(activeServer)}</span>
+              )}
+            </span>
+          </div>
+          <p
+            className={cn(
+              "mt-1 min-h-5 text-sm",
+              phase === "error" ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {detail}
           </p>
-        )}
-      </div>
-      <div className="ml-auto flex items-center gap-1">
-        {aura.updateVersion && (
+
           <button
             type="button"
-            onClick={() => toast.info("auto-update isn't wired into this port yet")}
-            className="mr-1 flex items-center gap-1 rounded-lg bg-primary/15 px-2.5 py-1.5 text-xs font-medium text-primary"
+            disabled={busy}
+            onClick={() => (connected ? aura.disconnect() : aura.connect())}
+            className={cn(
+              "mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors disabled:cursor-not-allowed",
+              connected
+                ? "border border-border bg-card text-foreground hover:bg-muted"
+                : "bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-70",
+            )}
           >
-            <Download className="size-3.5" />
-            ⬆ {aura.updateVersion}
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {connected ? "Disconnect" : busy ? "Connecting" : phase === "error" ? "Try again" : "Connect"}
           </button>
+
+          <Usage aura={aura} />
+        </section>
+
+        <Notices aura={aura} />
+
+        {/* Servers */}
+        <section className="border-t border-border/60 px-2 pb-3 pt-2">
+          <div className="flex items-center px-2 py-1.5">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Servers</h2>
+            <IconButton
+              title="Refresh servers"
+              className="ml-auto"
+              disabled={busy}
+              onClick={() => aura.refreshConfig()}
+            >
+              <RefreshCw className={cn("size-3.5", phase === "fetchingConfig" && "animate-spin")} />
+            </IconButton>
+          </div>
+          {servers.length === 0 ? (
+            <p className="px-2 py-6 text-center text-sm text-muted-foreground">
+              {phase === "fetchingConfig" ? "Loading…" : "No servers loaded yet."}
+            </p>
+          ) : (
+            <ul className="flex flex-col">
+              {[AUTO_TAG, ...servers.map((s) => s.tag)].map((tag) => (
+                <ServerRow
+                  key={tag}
+                  tag={tag}
+                  latency={tag === AUTO_TAG ? undefined : latencies[tag]}
+                  selected={selectedServerTag === tag}
+                  active={connected && activeServer === tag}
+                  disabled={busy}
+                  onSelect={() => aura.selectServer(tag)}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+
+      {/* Footer */}
+      <footer className="flex h-9 shrink-0 items-center gap-3 border-t border-border/60 px-4 text-xs text-muted-foreground">
+        <TailscaleBadge state={aura.tailscale} connected={connected} />
+        <span className="ml-auto">Space to {connected ? "disconnect" : "connect"}</span>
+      </footer>
+    </div>
+  );
+}
+
+function ServerRow({
+  tag,
+  latency,
+  selected,
+  active,
+  disabled,
+  onSelect,
+}: {
+  tag: string;
+  latency: number | undefined;
+  selected: boolean;
+  active: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+}) {
+  const auto = tag === AUTO_TAG;
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onSelect}
+        className={cn(
+          "flex h-10 w-full items-center gap-3 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60",
+          selected && "bg-muted",
         )}
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="tunnel settings"
+      >
+        <span
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center rounded-md text-xs font-semibold",
+            auto ? "bg-primary/15 text-primary" : "bg-secondary text-secondary-foreground",
+          )}
         >
-          <Settings2 className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => aura.logout()}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="log out"
-        >
-          <LogOut className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onOpenLogs}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="logs"
-        >
-          <span className="font-mono text-xs font-bold">›_</span>
-        </button>
+          {auto ? <Sparkles className="size-3.5" /> : tag.charAt(0).toUpperCase()}
+        </span>
+        <span className="min-w-0 flex-1 truncate">
+          {serverName(tag)}
+          {auto && <span className="text-muted-foreground"> · fastest</span>}
+        </span>
+        {active && <span className="text-xs font-medium text-primary">Connected</span>}
+        {latency !== undefined && (
+          <span className={cn("w-12 text-right text-xs tabular-nums", latencyColor(latency))}>{latency} ms</span>
+        )}
+        <span className="flex w-4 justify-end">
+          {selected && <Check className="size-4 text-primary" />}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function latencyColor(ms: number) {
+  if (ms < 120) return "text-emerald-400";
+  if (ms < 250) return "text-amber-400";
+  return "text-red-400";
+}
+
+function Usage({ aura }: { aura: Aura }) {
+  if (aura.budgetBytes === 0) return null;
+  const frac = Math.max(0, Math.min(1, aura.budgetFraction));
+  const bar = aura.overBudget ? "bg-destructive" : aura.budgetWarn ? "bg-amber-400" : "bg-primary";
+  return (
+    <div className="mt-4">
+      <div className="flex justify-between text-xs text-muted-foreground">
+        <span>Data this month</span>
+        <span className="tabular-nums">
+          {fmtBytes(aura.monthUsed)} of {fmtBytes(aura.budgetBytes)}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted">
+        <div className={cn("h-full rounded-full transition-all", bar)} style={{ width: `${frac * 100}%` }} />
       </div>
     </div>
   );
 }
 
-function StatusCard({
-  aura,
-  busy,
-  isConnected,
-  status,
-}: {
-  aura: Aura;
-  busy: boolean;
-  isConnected: boolean;
-  status: { color: string; icon: React.ReactNode; line: string; sub: string };
-}) {
-  return (
-    <div className="relative mt-2 overflow-hidden rounded-3xl border border-border/80 bg-gradient-to-br from-muted/40 to-card p-6 text-center shadow-2xl">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-40 blur-3xl"
-        style={{
-          background: `radial-gradient(circle at 50% 0%, var(--color-muted-foreground), transparent 70%)`,
-        }}
+function Notices({ aura }: { aura: Aura }) {
+  const { helper } = aura;
+  if (!helper.installed) {
+    return (
+      <Notice
+        text="The Aura helper isn't installed. It runs the tunnel and needs admin rights once."
+        action={aura.helperBusy ? "Installing…" : "Install"}
+        disabled={aura.helperBusy}
+        onAction={() => aura.installCore()}
       />
-      <div className="relative">
-        <ConnectButton aura={aura} busy={busy} isConnected={isConnected} status={status} />
-        <p className={cn("mt-4 text-sm font-bold", status.color)}>{status.line}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{status.sub}</p>
-      </div>
+    );
+  }
+  if (helper.outdated) {
+    return (
+      <Notice
+        text={`The helper is out of date (${helper.version} → ${helper.bundled_version}). Update for Tailscale support and fixes.`}
+        action={aura.helperBusy ? "Updating…" : "Update"}
+        disabled={aura.helperBusy}
+        onAction={() => aura.installCore()}
+      />
+    );
+  }
+  return null;
+}
+
+function Notice({
+  text,
+  action,
+  disabled,
+  onAction,
+}: {
+  text: string;
+  action: string;
+  disabled?: boolean;
+  onAction: () => void;
+}) {
+  return (
+    <div className="mx-4 mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-400" />
+      <p className="flex-1 text-foreground/90">{text}</p>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onAction}
+        className="shrink-0 rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground disabled:opacity-60"
+      >
+        {action}
+      </button>
     </div>
   );
 }
 
-function ConnectButton({
-  aura,
-  busy,
-  isConnected,
-  status,
-}: {
-  aura: Aura;
-  busy: boolean;
-  isConnected: boolean;
-  status: { color: string; icon: React.ReactNode; line: string; sub: string };
-}) {
+function TailscaleBadge({ state, connected }: { state: string; connected: boolean }) {
+  if (!connected || !state) return <span />;
   return (
-    <button
-      type="button"
-      disabled={busy}
-      onClick={() => (isConnected ? aura.disconnect() : aura.connect())}
-      className={cn(
-        "mx-auto flex size-[92px] items-center justify-center rounded-full border-2 bg-transparent transition-all duration-300 focus:outline-none",
-        `${status.color}`,
-        "border-current",
-        busy && "cursor-not-allowed opacity-80",
-      )}
-      style={{ boxShadow: "0 0 26px 0 color-mix(in oklch, currentColor 24%, transparent)" }}
+    <span
+      className="flex items-center gap-1.5"
+      title={
+        state === "rerouted"
+          ? "This network was sending tailnet traffic to its own router. Aura pointed it back at Tailscale while connected."
+          : "Tailnet traffic stays on Tailscale while Aura is connected."
+      }
     >
-      <span className={cn(status.color)}>
-        {busy ? (
-          <span className="block size-9 animate-spin rounded-full border-2 border-current border-t-transparent" />
-        ) : (
-          isConnected ? <Power className="size-9" /> : status.icon
-        )}
-      </span>
-    </button>
-  );
-}
-
-function StatChip({ icon, text }: { icon: React.ReactNode; text: string }) {
-  return (
-    <span className="flex items-center gap-1.5 rounded-lg bg-muted px-2.5 py-1.5 text-xs text-muted-foreground">
-      <span className="text-foreground/70">{icon}</span>
-      {text}
+      <Waypoints className="size-3.5 text-primary" />
+      Tailscale working alongside
     </span>
   );
 }
 
-function BudgetBar({ aura }: { aura: Aura }) {
-  if (aura.budgetBytes === 0) return null;
-  const frac = Math.max(0, Math.min(1, aura.budgetFraction));
-  const color = aura.overBudget
-    ? "text-destructive"
-    : aura.budgetWarn
-      ? "text-amber-400"
-      : "text-primary";
-  const barColor = aura.overBudget
-    ? "var(--color-destructive)"
-    : aura.budgetWarn
-      ? "oklch(0.78 0.15 85)" // amber
-      : "var(--color-primary)";
-  const line = aura.overBudget
-    ? lines.pick(lines.budgetOver)
-    : aura.budgetWarn
-      ? lines.pick(lines.budgetLow)
-      : lines.pick(lines.budget);
+function IconButton({
+  title,
+  onClick,
+  disabled,
+  className,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="mt-4">
-      <div className="flex items-center gap-1.5">
-        <span className={cn("text-xs text-muted-foreground")}>{fmtBytes(aura.monthUsed)} / {fmtBytes(aura.budgetBytes)} this month</span>
-      </div>
-      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded bg-muted">
-        <div
-          className="h-full rounded transition-all duration-300"
-          style={{ width: `${frac * 100}%`, background: barColor }}
-        />
-      </div>
-      <p className={cn("mt-1.5 text-[11px]", color)}>{line}</p>
-    </div>
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50",
+        className,
+      )}
+    >
+      {children}
+    </button>
   );
 }

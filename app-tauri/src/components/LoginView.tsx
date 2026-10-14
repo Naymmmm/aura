@@ -1,22 +1,19 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { AuraMark } from "@/components/AuraMark";
+import { extractLicenseKey, readLicenseFile } from "@/lib/api";
 import { authError, rules } from "@/lib/lines";
+import { cn } from "@/lib/utils";
 import type { Aura } from "@/state/useAura";
 import {
   Loader2,
   ChevronDown,
   ChevronUp,
-  Smartphone,
+  FileKey,
   KeyRound,
   Eye,
   EyeOff,
@@ -31,30 +28,71 @@ export function LoginView({ aura, onDebug }: { aura: Aura; onDebug: () => void }
       onDebug();
     }
   };
+  const [licenseKey, setLicenseKey] = useState("");
+  const [licenseBusy, setLicenseBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [accountId, setAccountId] = useState("");
   const [token, setToken] = useState("");
   const [obscureToken, setObscureToken] = useState(true);
   const [localError, setLocalError] = useState("");
-  const [remoteBusy, setRemoteBusy] = useState(false);
   const [legacyBusy, setLegacyBusy] = useState(false);
 
-  async function submit() {
+  async function submitLicense(raw = licenseKey) {
+    if (licenseBusy) return;
+    const key = extractLicenseKey(raw);
+    if (!key) {
+      setLocalError("that doesn't look like an Aura key (AURA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX)");
+      return;
+    }
+    setLicenseKey(key);
+    setLicenseBusy(true);
+    setLocalError("");
+    await aura.loginLicense(key);
+    setLicenseBusy(false);
+  }
+
+  function applyLicenseText(text: string) {
+    const key = extractLicenseKey(text);
+    if (!key) {
+      setLocalError("no Aura key found in that file");
+      return;
+    }
+    void submitLicense(key);
+  }
+
+  // Tauri swallows HTML drag-and-drop of files, so listen on the webview.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") setDragging(true);
+        else if (p.type === "leave") setDragging(false);
+        else if (p.type === "drop") {
+          setDragging(false);
+          const path = p.paths[0];
+          if (path) {
+            readLicenseFile(path)
+              .then(applyLicenseText)
+              .catch((e) => setLocalError(String(e)));
+          }
+        }
+      })
+      .then((u) => (unlisten = u))
+      .catch(() => {});
+    return () => unlisten?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function submitDiscord() {
     if (busy) return;
     setBusy(true);
     setLocalError("");
-    const ok = await aura.loginWithDiscord();
+    await aura.loginWithDiscord();
     setBusy(false);
-    if (!ok) setLocalError("");
-  }
-
-  async function submitRemote() {
-    if (remoteBusy) return;
-    setRemoteBusy(true);
-    setLocalError("");
-    await aura.loginWithDiscordViaHandoff();
-    setRemoteBusy(false);
   }
 
   async function submitLegacy() {
@@ -74,29 +112,76 @@ export function LoginView({ aura, onDebug }: { aura: Aura; onDebug: () => void }
   const errorLine = localError || authError(aura.authError);
 
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-background px-6 py-10">
-      <Card className="w-full max-w-md border-border shadow-2xl">
-        <CardHeader className="items-center justify-items-center gap-2 text-center">
+    <div
+      className={cn(
+        "flex min-h-screen w-full justify-center overflow-y-auto bg-background px-6 py-10 transition-colors",
+        dragging && "bg-primary/5 ring-2 ring-inset ring-primary/50",
+      )}
+    >
+      <div className="flex w-full max-w-xs flex-col gap-4">
+        <div className="mb-2 flex flex-col items-center gap-3 text-center">
           <button
             type="button"
             onClick={pressLogo}
-            className="flex h-16 w-16 items-center justify-center justify-self-center rounded-2xl bg-primary"
+            className="flex size-12 items-center justify-center rounded-xl bg-primary"
             title="Aura"
           >
-            <AuraMark size={42} color="var(--primary-foreground)" />
+            <AuraMark size={30} color="var(--primary-foreground)" />
           </button>
-          <CardTitle className="text-2xl font-black tracking-[0.35em]">
-            AURA
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            sign in with Discord to unlock Aura VPN
-          </p>
-        </CardHeader>
+          <div>
+            <h1 className="text-lg font-semibold">Sign in to Aura</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {dragging ? "Drop your .auralicense file" : "Enter your license key"}
+            </p>
+          </div>
+        </div>
 
-        <CardContent className="flex flex-col gap-4">
-          <Button size="lg" className="w-full font-extrabold tracking-wide" onClick={submit} disabled={busy}>
-            {busy ? <Loader2 className="size-4 animate-spin" /> : "CONTINUE WITH DISCORD"}
-          </Button>
+          <div className="flex flex-col gap-2">
+            <Input
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="AURA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+              className="h-10 text-center font-mono text-xs tracking-wide"
+              value={licenseKey}
+              onChange={(e) => setLicenseKey(e.currentTarget.value)}
+              onPaste={(e) => {
+                const key = extractLicenseKey(e.clipboardData.getData("text"));
+                if (key) {
+                  e.preventDefault();
+                  void submitLicense(key);
+                }
+              }}
+              onKeyDown={(e) => e.key === "Enter" && submitLicense()}
+            />
+            <Button className="h-10 w-full font-semibold" onClick={() => submitLicense()} disabled={licenseBusy}>
+              {licenseBusy ? <Loader2 className="size-4 animate-spin" /> : "Sign in"}
+            </Button>
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => fileInput.current?.click()}>
+              <FileKey className="size-4" />
+              Open license file
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".auralicense,.txt"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.currentTarget.files?.[0];
+                e.currentTarget.value = "";
+                if (file) applyLicenseText(await file.text());
+              }}
+            />
+          </div>
+
+          <p className="text-center text-xs text-muted-foreground">
+            No key? Run <span className="font-mono text-foreground">/license</span> in the Aura
+            Discord from your phone or any device, then paste the key or drop the file here.
+          </p>
+
+          {errorLine && (
+            <p className="text-center text-xs font-medium text-destructive">{errorLine}</p>
+          )}
 
           <Button
             variant="ghost"
@@ -112,21 +197,23 @@ export function LoginView({ aura, onDebug }: { aura: Aura; onDebug: () => void }
             <div className="flex flex-col gap-4">
               <Separator />
               <div>
-                <h3 className="text-sm font-extrabold">Filtered network?</h3>
+                <h3 className="text-sm font-semibold">Discord</h3>
                 <p className="text-xs text-muted-foreground">
-                  Open a temporary handoff and approve Discord from another,
-                  unfiltered device.
+                  Only works if this network can reach Discord.
                 </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2 w-full"
-                  onClick={submitRemote}
-                  disabled={remoteBusy}
-                >
-                  {remoteBusy ? <Loader2 className="size-4 animate-spin" /> : <Smartphone className="size-4" />}
-                  Use another device
-                </Button>
+                {busy ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                    <span className="text-xs">Approve the login in your browser…</span>
+                    <Button variant="ghost" size="sm" className="ml-auto" onClick={aura.cancelLogin}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button variant="outline" size="sm" className="mt-2 w-full" onClick={submitDiscord}>
+                    Continue with Discord
+                  </Button>
+                )}
               </div>
 
               <Separator />
@@ -134,7 +221,7 @@ export function LoginView({ aura, onDebug }: { aura: Aura; onDebug: () => void }
               <div className="flex flex-col gap-3">
                 <div className="flex items-center gap-2">
                   <KeyRound className="size-4 text-muted-foreground" />
-                  <span className="text-sm font-extrabold">Legacy access</span>
+                  <span className="text-sm font-semibold">Legacy access</span>
                 </div>
                 <div className="grid gap-1.5">
                   <Label htmlFor="accountId">account id</Label>
@@ -168,32 +255,21 @@ export function LoginView({ aura, onDebug }: { aura: Aura; onDebug: () => void }
                   </div>
                 </div>
                 <Button variant="secondary" size="sm" onClick={submitLegacy} disabled={legacyBusy}>
-                  {legacyBusy ? <Loader2 className="size-4 animate-spin" /> : "SIGN IN WITH LEGACY ACCESS"}
+                  {legacyBusy ? <Loader2 className="size-4 animate-spin" /> : "Sign in with legacy access"}
                 </Button>
               </div>
             </div>
           )}
 
-          <p className="text-center text-xs text-muted-foreground">
-            A browser window will open. Your Aura session lasts 14 days.
-          </p>
-
-          {errorLine && (
-            <p className="text-center text-xs font-medium text-destructive">{errorLine}</p>
-          )}
-
-          <div className="mt-2 rounded-xl border border-border bg-muted/40 p-4">
-            <p className="text-[10px] font-extrabold tracking-widest text-muted-foreground">
-              THE RULES
-            </p>
+          <div className="mt-2 rounded-lg border border-border/60 p-3">
+            <p className="text-xs font-medium text-muted-foreground">House rules</p>
             <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-xs text-muted-foreground">
               {rules.map((r) => (
                 <li key={r}>{r}</li>
               ))}
             </ol>
           </div>
-        </CardContent>
-      </Card>
+      </div>
     </div>
   );
 }

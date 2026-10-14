@@ -170,6 +170,33 @@ function ReleaseUpload({ onToast }: { onToast: (msg: string) => void }) {
   );
 }
 
+function DiscordCommands({ onToast }: { onToast: (msg: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function register() {
+    setBusy(true);
+    setError('');
+    const r = await api<{ registered?: number; error?: string }>('/v1/admin/commands', { method: 'POST' });
+    setBusy(false);
+    if (r.ok) onToast(`Registered ${r.body.registered} Discord commands`);
+    else setError('Failed: ' + (r.body.error ?? r.status));
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">Discord commands</CardTitle>
+        <CardDescription>Push the bot's slash commands (like /license) to the Aura server. Safe to run any time.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Button onClick={register} disabled={busy}>{busy ? 'Registering…' : 'Register commands'}</Button>
+        {error && <div className="text-sm text-destructive">{error}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
 function AccountsTable({
   accounts,
   onRefresh,
@@ -343,6 +370,7 @@ export default function AdminPage() {
 
       <div className="mt-6 space-y-6">
         <ReleaseUpload onToast={showToast} />
+        <DiscordCommands onToast={showToast} />
         <Card>
           <CardContent className="p-5">
             <AccountsTable accounts={accounts} onRefresh={loadAccounts} onToast={showToast} />

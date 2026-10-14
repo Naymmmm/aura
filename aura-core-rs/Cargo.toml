@@ -1,0 +1,38 @@
+[package]
+name = "aura-core"
+version = "26.3.0"
+edition = "2021"
+publish = false
+description = "Aura's privileged tunnel supervisor"
+
+[[bin]]
+name = "aura-core"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+if-addrs = "0.15"
+ipstack = "1.0"
+log = { version = "0.4", features = ["std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+time = { version = "0.3", features = ["formatting", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process", "signal", "sync", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tun-rs = { version = "2.8", features = ["async_tokio"] }
+webpki-roots = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+etherparse = "0.20"

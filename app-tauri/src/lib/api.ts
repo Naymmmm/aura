@@ -111,6 +111,15 @@ export interface CoreStats {
   egress_ip: string | null;
   proxy_addr: string | null;
   last_error: string | null;
+  /** "" (no Tailscale), "ok" or "rerouted" — aura-core 26.3+. */
+  tailscale: string;
+}
+
+export interface HelperInfo {
+  installed: boolean;
+  version: string | null;
+  outdated: boolean;
+  bundled_version: string;
 }
 
 export const appMeta = () =>
@@ -123,6 +132,9 @@ export const openBrowser = (url: string) => call<void>("open_browser", { url });
 
 export const openSession = (token: string) =>
   call<SessionInfo>("open_session", { token });
+export const licenseSession = (key: string) =>
+  call<SessionInfo>("license_session", { key });
+export const readLicenseFile = (path: string) => call<string>("read_license_file", { path });
 export const legacySession = (accountId: string, token: string) =>
   call<SessionInfo>("legacy_session", { account_id: accountId, token });
 export const heartbeat = (sessionId: string, delta = 0) =>
@@ -136,22 +148,14 @@ export const coreStart = (
   selected: ServerInfo,
   servers: ServerInfo[],
   preferIp: boolean,
-  killSwitch: boolean,
-  exceptions: string[],
-) =>
-  call<string>("core_start", {
-    auto,
-    selected,
-    servers,
-    prefer_ip: preferIp,
-    kill_switch: killSwitch,
-    exceptions,
-  });
+) => call<string>("core_start", { auto, selected, servers, prefer_ip: preferIp });
 export const coreStop = () => call<boolean>("core_stop");
 export const coreStatus = () => call<CoreStatus>("core_status");
 export const coreStats = () => call<CoreStats>("core_stats");
 export const coreLog = () => call<string>("core_log");
-export const coreDetected = () => call<boolean>("core_detected");
+export const coreHelper = () => call<HelperInfo>("core_helper");
+export const probeServers = (servers: ServerInfo[], preferIp: boolean) =>
+  call<Record<string, number>>("probe_servers", { servers, prefer_ip: preferIp });
 export const coreInstall = () => call<void>("core_install");
 export const coreUninstall = () => call<void>("core_uninstall");
 
@@ -160,7 +164,7 @@ export const usageMonthUsed = (accountId: string) =>
 export const usageAdd = (accountId: string, delta: number) =>
   call<void>("usage_add", { account_id: accountId, delta });
 
-export type AuthMode = "discord" | "legacy";
+export type AuthMode = "license" | "discord" | "legacy";
 
 export interface StoredAuth {
   mode: AuthMode;
@@ -178,6 +182,20 @@ export function saveDiscordAuth(token: string) {
   localStorage.removeItem("aura.acct");
 }
 
+export function saveLicenseAuth(key: string) {
+  localStorage.setItem("aura.mode", "license");
+  localStorage.setItem("aura.token", key);
+  localStorage.removeItem("aura.acct");
+}
+
+/** Pull an `AURA-XXXXX-…` key out of pasted text or a license file's contents. */
+export function extractLicenseKey(text: string): string | null {
+  const m = text.toUpperCase().match(/AURA(?:[\s-]*[0-9A-Z]{5}){5}/);
+  if (!m) return null;
+  const body = m[0].slice(4).replace(/[^0-9A-Z]/g, "");
+  return `AURA-${body.match(/.{5}/g)!.join("-")}`;
+}
+
 export function saveLegacyAuth(accountId: string, token: string) {
   localStorage.setItem("aura.mode", "legacy");
   localStorage.setItem("aura.token", token);
@@ -193,7 +211,7 @@ export function loadAuth(): StoredAuth | null {
     if (!accountId) return null;
     return { mode: "legacy", token, accountId };
   }
-  return { mode: "discord", token };
+  return { mode: mode === "license" ? "license" : "discord", token };
 }
 
 export function clearAuth() {

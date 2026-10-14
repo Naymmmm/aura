@@ -29,11 +29,22 @@ describe('release workflow', () => {
     expect(workflow).toContain('body_path: releases/${{ github.ref_name }}.md');
   });
 
-  it('ships macOS as a DMG instead of a zip', () => {
-    expect(workflow).toContain('aura-macos-arm64.dmg');
-    expect(workflow).toContain('hdiutil create');
-    expect(workflow).toContain('publish macos dist/aura-macos-arm64/aura-macos-arm64.dmg');
-    expect(workflow).not.toContain('ditto -c -k --keepParent "$APP" aura-macos-arm64.zip');
+  it('ships macOS as a universal DMG instead of a zip', () => {
+    expect(workflow).toContain('--target universal-apple-darwin --bundles dmg');
+    expect(workflow).toContain('publish macos dist/aura-macos-universal/aura-macos-universal.dmg');
+    expect(workflow).not.toContain('ditto -c -k --keepParent');
+  });
+
+  it('builds the Rust aura-core into every desktop bundle', () => {
+    expect(workflow).toContain('--manifest-path aura-core-rs/Cargo.toml');
+    expect(workflow).not.toMatch(/(^|\s)go build/m);
+    expect(workflow).toContain('publish windows-arm64');
+    expect(workflow).toContain('publish linux');
+  });
+
+  it('only promotes and announces tagged releases', () => {
+    expect(workflow).toContain('-F "promote=${PROMOTE}"');
+    expect(workflow).toContain("if: startsWith(github.ref, 'refs/tags/v')");
   });
 
   it('bundles Aura Core during every normal Windows app build', () => {

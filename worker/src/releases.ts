@@ -194,7 +194,8 @@ function isReleaseChangelog(value: string): boolean {
     value.endsWith('<@&1544233739322789948>');
 }
 
-type ArchiveArtifact = 'windows' | 'macos' | 'source';
+type ArchiveArtifact = 'windows' | 'windows-arm64' | 'macos' | 'linux' | 'source';
+const ARCHIVE_ARTIFACTS: readonly ArchiveArtifact[] = ['windows', 'windows-arm64', 'macos', 'linux', 'source'];
 
 interface ArchiveArtifactMeta {
   key: string;
@@ -214,17 +215,21 @@ interface ArchiveIndex {
 }
 
 function isArchiveArtifact(value: string): value is ArchiveArtifact {
-  return value === 'windows' || value === 'macos' || value === 'source';
+  return (ARCHIVE_ARTIFACTS as readonly string[]).includes(value);
 }
 
 function canonicalKey(artifact: ArchiveArtifact): string {
   if (artifact === 'windows') return 'latest';
+  if (artifact === 'windows-arm64') return 'latest-windows-arm64';
   if (artifact === 'macos') return 'latest-macos';
+  if (artifact === 'linux') return 'latest-linux';
   return 'source';
 }
 
 function artifactFileName(artifact: ArchiveArtifact, version: string, extension?: 'zip' | 'dmg'): string {
   if (artifact === 'windows') return `aura-${version}-windows-amd64.zip`;
+  if (artifact === 'windows-arm64') return `aura-${version}-windows-arm64.zip`;
+  if (artifact === 'linux') return `aura-${version}-linux-x64.zip`;
   if (artifact === 'macos') return `aura-${version}-macos-arm64.${extension ?? 'dmg'}`;
   return `aura-${version}-source.zip`;
 }
@@ -247,7 +252,7 @@ async function readArchiveManifest(bucket: R2Bucket, version: string): Promise<A
       ) {
         const artifacts: Partial<Record<ArchiveArtifact, ArchiveArtifactMeta>> = {};
         const rawArtifacts = body.artifacts as Record<string, unknown>;
-        for (const name of ['windows', 'macos', 'source'] as const) {
+        for (const name of ARCHIVE_ARTIFACTS) {
           if (name in rawArtifacts) {
             const value = rawArtifacts[name];
             if (isArchiveArtifactMeta(value)) artifacts[name] = value;
@@ -404,11 +409,11 @@ export async function serveReleaseMeta(req: Request, env: Env): Promise<Response
 }
 
 const VERSION_RE = /^v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/;
-const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|macos\.(?:zip|dmg)|source\.zip)$/;
+const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|windows-arm64\.zip|linux\.zip|macos\.(?:zip|dmg)|source\.zip)$/;
 
 // GET /dl/{key} — caller has already passed the Discord session gate.
 export async function serveDownload(req: Request, env: Env, key: string): Promise<Response> {
-  const canonical = /^(latest|latest-macos|source)$/.test(key);
+  const canonical = /^(latest|latest-macos|latest-windows-arm64|latest-linux|source)$/.test(key);
   if (!canonical && !ARCHIVE_KEY_RE.test(key)) return json({ error: 'not found' }, 404);
   let objectKey = key;
   let legacyType: string | undefined;
@@ -475,10 +480,12 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
 }
 
 function dlName(objectKey: string, requestedKey: string, isDmg: boolean): string {
-  const match = objectKey.match(/^archive\/(v[^/]+)\/(windows|macos|source)\.(zip|dmg)$/);
+  const match = objectKey.match(/^archive\/(v[^/]+)\/(windows|windows-arm64|macos|linux|source)\.(zip|dmg)$/);
   if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1], match[3] as 'zip' | 'dmg');
   if (requestedKey === 'latest') return 'aura-windows-amd64.zip';
   if (requestedKey === 'latest-macos') return isDmg ? 'aura-macos-arm64.dmg' : 'aura-macos-arm64.zip';
+  if (requestedKey === 'latest-windows-arm64') return 'aura-windows-arm64.zip';
+  if (requestedKey === 'latest-linux') return 'aura-linux-x64.zip';
   if (requestedKey === 'source') return 'aura-source.zip';
   return 'aura-release.zip';
 }

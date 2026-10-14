@@ -11,9 +11,9 @@ export const loggedOut = [
 ];
 
 export const badCreds = [
-  "wrong account id or token. check the copy-paste king",
-  "those creds are not it. ask the admin",
-  "bad creds. the aura rejected you (respectfully)",
+  "that key isn't valid (or got replaced). run /license for a fresh one",
+  "key rejected. if you ran /license again, only the newest key works",
+  "bad key. the aura rejected you (respectfully)",
 ];
 
 export const accountExpired = [

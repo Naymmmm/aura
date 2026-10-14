@@ -1,186 +1,229 @@
 name: build
 
+# Tags (vX.Y.Z) build a real release: published to the archive as the new
+# latest, announced in Discord and attached to a GitHub release. Pushes to the
+# tauri branch publish unpromoted dev builds to the archive only.
 on:
   push:
     tags: ['v[0-9]*.[0-9]*.[0-9]*']
+    branches: ['tauri']
   workflow_dispatch:
 
 env:
   NAIVE_VERSION: 150.0.7871.63-1
-  FLUTTER_VERSION: 3.44.6
+  CARGO_TERM_COLOR: always
 
 jobs:
   windows:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rust_target: x86_64-pc-windows-msvc
+            naive: win-x64
+            wintun: amd64
+          - arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+            naive: win-arm64
+            wintun: arm64
+    runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
         with:
-          go-version: '1.26.x'
-          cache-dependency-path: aura-core/go.mod
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            app-tauri/src-tauri
+            aura-core-rs
+          key: ${{ matrix.rust_target }}
+
+      # ring (rustls' crypto) needs clang to build for Windows on ARM.
+      - name: Ensure clang for ARM64
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            choco install llvm -y --no-progress
+            "C:\Program Files\LLVM\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          }
 
       - name: Test aura-core
-        working-directory: aura-core
-        run: go test ./...
+        if: matrix.arch == 'amd64'
+        run: cargo test --locked --manifest-path aura-core-rs/Cargo.toml
 
-      - name: Validate PowerShell deployment scripts
+      - name: Bundle aura-core + naive + wintun
         shell: pwsh
         run: |
-          $failed = $false
-          @(Get-ChildItem infra -Filter *.ps1) + @(Get-ChildItem app/tool -Filter *.ps1) | ForEach-Object {
-            $tokens = $null
-            $errors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
-            if ($errors.Count) {
-              $failed = $true
-              $errors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
-            }
-          }
-          if ($failed) { exit 1 }
-
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Prepare secrets.dart from example
-        shell: pwsh
-        run: Copy-Item app/lib/secrets.example.dart app/lib/secrets.dart -Force
-
-      - name: Download NaiveProxy and Wintun (windows-amd64)
-        shell: pwsh
-        run: |
-          $work = "$env:RUNNER_TEMP\naiveproxy"
-          $dir = "$work\bundle"
+          cargo build --locked --release --manifest-path aura-core-rs/Cargo.toml --target ${{ matrix.rust_target }}
+          $dir = "app-tauri\src-tauri\resources\aura-core"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $zip = "$work\naive.zip"
-          Invoke-WebRequest "https://github.com/klzgrad/naiveproxy/releases/download/v$env:NAIVE_VERSION/naiveproxy-v$env:NAIVE_VERSION-win-x64.zip" -OutFile $zip
-          $extract = "$work\ex"
-          Expand-Archive $zip $extract
-          Get-ChildItem "$extract" -Directory | Select-Object -First 1 | ForEach-Object {
-            Copy-Item "$($_.FullName)\naive.exe" "$dir\naive.exe" -Force
-          }
-          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$work\wintun.zip"
-          Expand-Archive "$work\wintun.zip" "$work\w"
-          Copy-Item "$work\w\wintun\bin\amd64\wintun.dll" "$dir\wintun.dll" -Force
-          echo "NAIVE_DIR=$dir" >> $env:GITHUB_ENV
+          Copy-Item "aura-core-rs\target\${{ matrix.rust_target }}\release\aura-core.exe" "$dir\aura-core.exe" -Force
+          $zip = "$env:RUNNER_TEMP\naive.zip"
+          Invoke-WebRequest "https://github.com/klzgrad/naiveproxy/releases/download/v$env:NAIVE_VERSION/naiveproxy-v$env:NAIVE_VERSION-${{ matrix.naive }}.zip" -OutFile $zip
+          $ex = "$env:RUNNER_TEMP\ex"
+          Expand-Archive $zip $ex
+          Get-ChildItem "$ex" -Directory | Select-Object -First 1 | ForEach-Object { Copy-Item "$($_.FullName)\naive.exe" "$dir\naive.exe" -Force }
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$env:RUNNER_TEMP\wintun.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wintun.zip" "$env:RUNNER_TEMP\w"
+          Copy-Item "$env:RUNNER_TEMP\w\wintun\bin\${{ matrix.wintun }}\wintun.dll" "$dir\wintun.dll" -Force
 
-      - name: Test official NaiveProxy integration
-        shell: pwsh
-        working-directory: aura-core
-        run: |
-          $env:AURA_NAIVE_PATH = "$env:NAIVE_DIR\naive.exe"
-          go test -run TestNaiveProxyMultiListenerIntegration -count=1 .
+      - name: Install frontend deps
+        working-directory: app-tauri
+        run: npm ci
 
-      - run: flutter pub get
-        working-directory: app
+      - name: Build Tauri app (portable, no installer)
+        working-directory: app-tauri
+        run: npx tauri build --no-bundle --target ${{ matrix.rust_target }}
 
-      - run: flutter analyze
-        working-directory: app
-
-      - run: flutter test --concurrency=1 --reporter=expanded --timeout=30s
-        working-directory: app
-
-      - run: flutter build windows --release
-        working-directory: app
-
-      - name: Build aura-core helper
-        shell: pwsh
-        working-directory: aura-core
-        run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o aura-core.exe .
-
-      - name: Bundle Aura Core + NaiveProxy + Wintun + zip
+      - name: Zip the portable Windows app
         shell: pwsh
         run: |
-          $rel = "app\build\windows\x64\runner\Release"
-          New-Item -ItemType Directory -Force -Path "$rel\aura-core" | Out-Null
-          Copy-Item "aura-core\aura-core.exe" "$rel\aura-core\aura-core.exe" -Force
-          Copy-Item "$env:NAIVE_DIR\naive.exe" "$rel\aura-core\naive.exe" -Force
-          Copy-Item "$env:NAIVE_DIR\wintun.dll" "$rel\aura-core\wintun.dll" -Force
-          if (Get-ChildItem "$rel\aura-core" -Recurse | Where-Object Name -Match 'sing-box|singbox') { throw 'sing-box leaked into the release bundle' }
-          Compress-Archive -Path "$rel\*" -DestinationPath aura-windows-amd64.zip
+          $rel = "app-tauri\src-tauri\target\${{ matrix.rust_target }}\release"
+          $stage = "staging"
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "$rel\aura.exe" "$stage\aura.exe" -Force
+          if (Test-Path "$rel\resources") { Copy-Item "$rel\resources" "$stage\resources" -Recurse -Force }
+          if (-not (Test-Path "$stage\resources\aura-core\aura-core.exe")) { throw 'aura-core is missing from the Windows bundle' }
+          Compress-Archive -Path "$stage\*" -DestinationPath aura-windows-${{ matrix.arch }}.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: aura-windows-amd64
-          path: aura-windows-amd64.zip
+          name: aura-windows-${{ matrix.arch }}
+          path: aura-windows-${{ matrix.arch }}.zip
 
   macos:
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-latest
+    env:
+      # Match tauri.conf.json so every binary loads on the same OS range.
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
         with:
-          go-version: '1.26.x'
-          cache-dependency-path: aura-core/go.mod
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            app-tauri/src-tauri
+            aura-core-rs
 
       - name: Test aura-core
-        working-directory: aura-core
-        run: go test ./...
+        run: cargo test --locked --manifest-path aura-core-rs/Cargo.toml
 
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Prepare secrets.dart from example
-        run: cp app/lib/secrets.example.dart app/lib/secrets.dart
-
-      - name: Download NaiveProxy (darwin-arm64)
+      - name: Bundle universal aura-core + naive (Apple Silicon + Intel)
         run: |
-          NAIVE_DIR="$RUNNER_TEMP/naiveproxy"; mkdir -p "$NAIVE_DIR"
-          curl -fsSL "https://github.com/klzgrad/naiveproxy/releases/download/v${NAIVE_VERSION}/naiveproxy-v${NAIVE_VERSION}-mac-arm64-arm64.tar.xz" | tar -xJ -C "$NAIVE_DIR" --strip-components=1
-          echo "NAIVE_DIR=$NAIVE_DIR" >> "$GITHUB_ENV"
+          dir="app-tauri/src-tauri/resources/aura-core"
+          mkdir -p "$dir"
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release --manifest-path aura-core-rs/Cargo.toml --target "$target"
+          done
+          lipo -create -output "$dir/aura-core" \
+            aura-core-rs/target/aarch64-apple-darwin/release/aura-core \
+            aura-core-rs/target/x86_64-apple-darwin/release/aura-core
+          for arch in arm64-arm64 x64-x64; do
+            mkdir -p "$RUNNER_TEMP/naive-$arch"
+            curl -fsSL "https://github.com/klzgrad/naiveproxy/releases/download/v${NAIVE_VERSION}/naiveproxy-v${NAIVE_VERSION}-mac-${arch}.tar.xz" | tar -xJ -C "$RUNNER_TEMP/naive-$arch" --strip-components=1
+          done
+          lipo -create -output "$dir/naive" "$RUNNER_TEMP/naive-arm64-arm64/naive" "$RUNNER_TEMP/naive-x64-x64/naive"
+          lipo -info "$dir/aura-core" "$dir/naive"
 
-      - name: Test official NaiveProxy integration
-        working-directory: aura-core
-        run: AURA_NAIVE_PATH="$NAIVE_DIR/naive" go test -run TestNaiveProxyMultiListenerIntegration -count=1 .
+      - name: Install frontend deps
+        working-directory: app-tauri
+        run: npm ci
 
-      - run: flutter pub get
-        working-directory: app
+      - name: Build Tauri app (universal DMG)
+        working-directory: app-tauri
+        run: npx tauri build --target universal-apple-darwin --bundles dmg
 
-      - run: flutter analyze
-        working-directory: app
-
-      - run: flutter test --concurrency=1 --reporter=expanded --timeout=30s
-        working-directory: app
-
-      - run: flutter build macos --release
-        working-directory: app
-
-      - name: Build aura-core helper
-        working-directory: aura-core
-        run: go build -trimpath -ldflags "-s -w" -o aura-core .
-
-      - name: Bundle Aura Core + NaiveProxy + DMG
-        run: |
-          APP="app/build/macos/Build/Products/Release/aura.app"
-          mkdir -p "$APP/Contents/MacOS/aura-core"
-          cp aura-core/aura-core "$APP/Contents/MacOS/aura-core/"
-          cp "$NAIVE_DIR"/naive "$APP/Contents/MacOS/aura-core/"
-          ! find "$APP" -iname '*sing-box*' -o -iname '*singbox*' | grep -q .
-          codesign --force --deep --sign - "$APP"
-          DMG_ROOT="$RUNNER_TEMP/aura-dmg"
-          mkdir -p "$DMG_ROOT"
-          cp -R "$APP" "$DMG_ROOT/Aura.app"
-          ln -s /Applications "$DMG_ROOT/Applications"
-          hdiutil create -volname Aura -srcfolder "$DMG_ROOT" -ov -format UDZO aura-macos-arm64.dmg
+      - name: Collect DMG
+        run: cp app-tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg aura-macos-universal.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: aura-macos-arm64
-          path: aura-macos-arm64.dmg
+          name: aura-macos-universal
+          path: aura-macos-universal.dmg
 
-  release:
-    needs: [windows, macos]
-    runs-on: ubuntu-latest
+  linux:
+    # 22.04's older glibc/WebKitGTK keeps the AppImage runnable on older distros.
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            app-tauri/src-tauri
+            aura-core-rs
+
+      - name: Test aura-core
+        run: cargo test --locked --manifest-path aura-core-rs/Cargo.toml
+
+      - name: Bundle aura-core + naive (linux)
+        run: |
+          dir="app-tauri/src-tauri/resources/aura-core"
+          mkdir -p "$dir"
+          cargo build --locked --release --manifest-path aura-core-rs/Cargo.toml
+          cp aura-core-rs/target/release/aura-core "$dir/aura-core"
+          mkdir -p "$RUNNER_TEMP/naive"
+          curl -fsSL "https://github.com/klzgrad/naiveproxy/releases/download/v${NAIVE_VERSION}/naiveproxy-v${NAIVE_VERSION}-linux-x64.tar.xz" | tar -xJ -C "$RUNNER_TEMP/naive" --strip-components=1
+          cp "$RUNNER_TEMP/naive/naive" "$dir/naive"
+
+      - name: Install frontend deps
+        working-directory: app-tauri
+        run: npm ci
+
+      - name: Build Tauri app (AppImage + deb)
+        working-directory: app-tauri
+        run: npx tauri build --bundles appimage,deb
+
+      - name: Zip the Linux bundles
+        run: |
+          b=app-tauri/src-tauri/target/release/bundle
+          zip -j aura-linux-x64.zip $b/appimage/*.AppImage $b/deb/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aura-linux-x64
+          path: aura-linux-x64.zip
+
+  publish:
+    needs: [windows, macos, linux]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: write
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -190,40 +233,52 @@ jobs:
         with:
           path: dist
 
-      - name: Validate release changelog
-        run: node worker/scripts/validate-release-changelog.mjs "releases/${GITHUB_REF_NAME}.md" "${GITHUB_REF_NAME}"
+      - name: Pick version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            node worker/scripts/validate-release-changelog.mjs "releases/${GITHUB_REF_NAME}.md" "${GITHUB_REF_NAME}"
+            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            echo "PROMOTE=true" >> "$GITHUB_ENV"
+          else
+            base="$(node -p "require('./app-tauri/package.json').version")"
+            echo "VERSION=v${base}-tauri-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+            echo "PROMOTE=false" >> "$GITHUB_ENV"
+          fi
 
-      - name: Build source archive
-        run: git archive --format=zip --prefix="aura-${GITHUB_REF_NAME}/" --output aura-source.zip HEAD
-
-      - name: Publish version archive to Aura
+      - name: Publish to the version archive
         env:
           AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
+          git archive --format=zip --prefix="aura-${VERSION}/" --output aura-source.zip HEAD
           publish() {
+            local sha256 content_type
             sha256="$(sha256sum "$2" | awk '{print $1}')"
             content_type=application/zip
             case "$2" in *.dmg) content_type=application/x-apple-diskimage ;; esac
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
-              -F "version=${GITHUB_REF_NAME}" \
+              -F "version=${VERSION}" \
               -F "artifact=$1" \
               -F "sha256=${sha256}" \
+              -F "promote=${PROMOTE}" \
               -F "file=@$2;type=${content_type}" \
               https://api.copal.run/v1/releases/publish
           }
           publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
-          publish macos dist/aura-macos-arm64/aura-macos-arm64.dmg
+          publish windows-arm64 dist/aura-windows-arm64/aura-windows-arm64.zip
+          publish macos dist/aura-macos-universal/aura-macos-universal.dmg
+          publish linux dist/aura-linux-x64/aura-linux-x64.zip
           publish source aura-source.zip
 
       - name: Announce release in Discord
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
         run: |
           jq -n \
-            --arg version "${GITHUB_REF_NAME}" \
-            --rawfile changelog "releases/${GITHUB_REF_NAME}.md" \
+            --arg version "${VERSION}" \
+            --rawfile changelog "releases/${VERSION}.md" \
             '{version: $version, changelog: $changelog}' > release-announcement.json
           curl --fail-with-body --retry 3 --retry-all-errors \
             -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
@@ -232,6 +287,7 @@ jobs:
             https://api.copal.run/v1/releases/announce
 
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           body_path: releases/${{ github.ref_name }}.md
           files: |

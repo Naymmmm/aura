@@ -103,6 +103,15 @@ func runPowerShell(script string) (string, error) {
 	return runCommand("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 }
 
+// Windows Tailscale owns its routes and MagicDNS via NRPT; Aura only uses
+// /1 splits, which never outrank Tailscale's more-specific tailnet routes.
+func (r *windowsRoutes) TailscaleState() string {
+	if tailscaleInterface() != "" {
+		return "ok"
+	}
+	return ""
+}
+
 func (r *windowsRoutes) Close() error {
 	var errs []error
 	for _, prefix := range r.tunnelPrefixes {

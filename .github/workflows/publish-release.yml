@@ -8,13 +8,13 @@ on:
         required: true
         type: string
       source_run_id:
-        description: Completed build run that produced the Windows and macOS artifacts
+        description: Completed build run that produced the Windows, macOS and Linux artifacts
         required: true
         type: string
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       actions: read
       contents: write
@@ -26,16 +26,8 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: aura-windows-amd64
-          path: dist/aura-windows-amd64
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.source_run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: aura-macos-arm64
-          path: dist/aura-macos-arm64
+          pattern: aura-*
+          path: dist
           repository: ${{ github.repository }}
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -64,7 +56,9 @@ jobs:
               https://api.copal.run/v1/releases/publish
           }
           publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
-          publish macos dist/aura-macos-arm64/aura-macos-arm64.dmg
+          publish windows-arm64 dist/aura-windows-arm64/aura-windows-arm64.zip
+          publish macos dist/aura-macos-universal/aura-macos-universal.dmg
+          publish linux dist/aura-linux-x64/aura-linux-x64.zip
           publish source aura-source.zip
 
       - name: Announce release in Discord

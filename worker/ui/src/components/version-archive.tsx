@@ -7,11 +7,18 @@ import { Button } from '@/components/ui/button';
 import { fetchArchive, type ArchiveResponse, type ArchiveVersion, type ArtifactType } from '@/lib/api';
 
 function artifactLabel(artifact: ArtifactType): string {
-  return artifact === 'windows' ? 'Windows' : artifact === 'macos' ? 'macOS' : 'Source';
+  const labels: Record<ArtifactType, string> = {
+    windows: 'Windows',
+    'windows-arm64': 'Windows ARM',
+    macos: 'macOS',
+    linux: 'Linux',
+    source: 'Source',
+  };
+  return labels[artifact];
 }
 
 function ArtifactLinks({ version, canDownloadSource }: { version: ArchiveVersion; canDownloadSource: boolean }) {
-  const artifacts = (['windows', 'macos', 'source'] as ArtifactType[])
+  const artifacts = (['windows', 'windows-arm64', 'macos', 'linux', 'source'] as ArtifactType[])
     .filter((artifact) => artifact !== 'source' || canDownloadSource)
     .filter((artifact) => version.artifacts[artifact]);
 

@@ -7,7 +7,11 @@ function request(path: string, init?: RequestInit): Request {
   return new Request(`https://api.copal.run${path}`, init);
 }
 
-async function publishArtifact(version: string, artifact: 'windows' | 'macos' | 'source', body: string) {
+async function publishArtifact(
+  version: string,
+  artifact: 'windows' | 'windows-arm64' | 'macos' | 'linux' | 'source',
+  body: string
+) {
   const form = new FormData();
   form.set('version', version);
   form.set('artifact', artifact);
@@ -103,6 +107,22 @@ describe('Discord-gated downloads', () => {
     );
 
     expect(response.status).toBe(401);
+  });
+
+  it('publishes Windows ARM and Linux builds under their own latest aliases', async () => {
+    expect((await publishArtifact('v0.9.0', 'windows-arm64', 'arm-build')).status).toBe(200);
+    expect((await publishArtifact('v0.9.0', 'linux', 'linux-build')).status).toBe(200);
+
+    expect(await (await env.RELEASES.get('meta:latest-windows-arm64'))!.json()).toMatchObject({
+      version: 'v0.9.0',
+      target: 'archive/v0.9.0/windows-arm64.zip',
+    });
+    expect(await (await env.RELEASES.get('meta:latest-linux'))!.json()).toMatchObject({
+      version: 'v0.9.0',
+      target: 'archive/v0.9.0/linux.zip',
+    });
+    // The amd64 Windows alias must not be overwritten by the ARM build.
+    expect(await env.RELEASES.get('meta:latest')).toBeNull();
   });
 
   it('publishes a versioned artifact and points the latest alias at it', async () => {

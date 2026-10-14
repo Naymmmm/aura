@@ -4,13 +4,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   authPoll,
   authStart,
   checkUpdate,
   clearAuth,
   closeSession,
-  coreDetected,
+  coreHelper,
   coreInstall,
   coreUninstall,
   coreStart,
@@ -18,13 +20,17 @@ import {
   coreStop,
   heartbeat,
   legacySession,
+  licenseSession,
+  saveLicenseAuth,
   loadAuth,
   openBrowser,
   openSession,
+  probeServers,
   usageAdd,
   usageMonthUsed,
   type AuthErrorKind,
   type CoreStats,
+  type HelperInfo,
   type ServerConfig,
   type ServerInfo,
   type SessionInfo,
@@ -71,33 +77,6 @@ const isAuthKind = (v: string): v is AuthErrorKind =>
 /** The tag sentinel for the "Automatic" (best-server) option. */
 export const AUTO_TAG = "automatic";
 
-interface Settings {
-  killSwitch: boolean;
-  exceptions: string[];
-}
-
-function loadSettings(): Settings {
-  try {
-    const raw = localStorage.getItem("aura.settings");
-    if (raw) {
-      const p = JSON.parse(raw) as Partial<Settings>;
-      return {
-        killSwitch: !!p.killSwitch,
-        exceptions: Array.isArray(p.exceptions)
-          ? p.exceptions.filter((s): s is string => typeof s === "string")
-          : [],
-      };
-    }
-  } catch {
-    /* corrupt — start fresh */
-  }
-  return { killSwitch: false, exceptions: [] };
-}
-
-function persistSettings(s: Settings) {
-  localStorage.setItem("aura.settings", JSON.stringify(s));
-}
-
 /** Stable per-account id so usage follows the account and a NEW account starts at 0. */
 function accountKey(s: SessionInfo | null): string {
   if (!s) return "unknown";
@@ -106,7 +85,8 @@ function accountKey(s: SessionInfo | null): string {
 }
 
 export function useAura() {
-  const [phase, setPhase] = useState<Phase>("loggedOut");
+  // Returning users start in the loading state, not on the login screen.
+  const [phase, setPhase] = useState<Phase>(() => (loadAuth() ? "fetchingConfig" : "loggedOut"));
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [activeServer, setActiveServer] = useState<string | null>(null);
   const [selectedServerTag, setSelectedServerTag] = useState<string | null>(null);
@@ -119,34 +99,45 @@ export function useAura() {
   const [authError, setAuthError] = useState<AuthErrorKind | null>(null);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [killSwitch, setKillSwitch] = useState<boolean>(() => loadSettings().killSwitch);
-  const [exceptions, setExceptions] = useState<string[]>(() => loadSettings().exceptions);
-  const [blocked, setBlocked] = useState(false);
+  const [tailscale, setTailscale] = useState("");
   const [egressIp, setEgressIp] = useState<string | null>(null);
   const [proxyAddr, setProxyAddr] = useState<string | null>(null);
   const [debugMode, setDebugModeState] = useState<boolean>(
     () => localStorage.getItem("aura.debug") === "1",
   );
-  const [coreDetectedState, setCoreDetectedState] = useState<boolean>(true);
+  // Assume installed until the first probe so the banner doesn't flash.
+  const [helper, setHelper] = useState<HelperInfo>({
+    installed: true,
+    version: null,
+    outdated: false,
+    bundled_version: "",
+  });
+  const [helperBusy, setHelperBusy] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const dismissInstallError = useCallback(() => setInstallError(null), []);
 
   const detectCore = useCallback(async () => {
-    const d = await coreDetected().catch(() => false);
-    setCoreDetectedState(d);
+    const info = await coreHelper().catch(() => null);
+    setHelper(info ?? { installed: false, version: null, outdated: false, bundled_version: "" });
   }, []);
   const installCore = useCallback(async () => {
+    setHelperBusy(true);
     try {
       await coreInstall();
-      toast.success("aura-core installed");
+      // The service needs a moment to start listening after install.
+      await new Promise((r) => setTimeout(r, 1500));
+      toast.success("Helper installed");
     } catch (e) {
-      setInstallError(typeof e === "string" ? e : "aura-core install failed");
+      setInstallError(typeof e === "string" ? e : "Helper install failed");
     }
     await detectCore();
+    setHelperBusy(false);
   }, [detectCore]);
   const uninstallCore = useCallback(async () => {
+    setHelperBusy(true);
     await coreUninstall().catch(() => {});
     await detectCore();
+    setHelperBusy(false);
   }, [detectCore]);
   const toggleDebug = useCallback(() => {
     setDebugModeState((s) => {
@@ -158,12 +149,14 @@ export function useAura() {
 
   // Refs mirror the values timers/async need so they never read stale state.
   const sessionRef = useRef<SessionInfo | null>(null);
-  const phaseRef = useRef<Phase>("loggedOut");
+  const phaseRef = useRef<Phase>(loadAuth() ? "fetchingConfig" : "loggedOut");
+  // Set once disconnect closes the session server-side; the next connect must
+  // open a fresh one or its heartbeat 410s and logs the user out.
+  const sessionClosedRef = useRef(false);
+  const loginAbortRef = useRef<{ cancelled: boolean } | null>(null);
   const selectedRef = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
   const accountIdRef = useRef<string>("unknown");
-  const killSwitchRef = useRef<boolean>(loadSettings().killSwitch);
-  const exceptionsRef = useRef<string[]>(loadSettings().exceptions);
   const monthUsedRef = useRef(0);
   const budgetRef = useRef(0);
   const prevUpRef = useRef(0);
@@ -186,12 +179,6 @@ export function useAura() {
   useEffect(() => {
     activeRef.current = activeServer;
   }, [activeServer]);
-  useEffect(() => {
-    killSwitchRef.current = killSwitch;
-  }, [killSwitch]);
-  useEffect(() => {
-    exceptionsRef.current = exceptions;
-  }, [exceptions]);
 
   const log = useCallback((message: string) => {
     setLogs((prev) => {
@@ -222,6 +209,15 @@ export function useAura() {
     budgetRef.current = b;
   }, []);
 
+  const probeLatencies = useCallback((config: ServerConfig | undefined) => {
+    if (!config?.servers.length) return;
+    void probeServers(config.servers, config.prefer_ip)
+      .then((l) => {
+        if (phaseRef.current !== "connected") setLatencies(l);
+      })
+      .catch(() => {});
+  }, []);
+
   const finishLogin = useCallback(
     (s: SessionInfo) => {
       setSession(s);
@@ -230,9 +226,10 @@ export function useAura() {
       setBudget(s.config);
       syncSelected(s.config);
       setPhase("disconnected");
+      probeLatencies(s.config);
       log(`Discord session opened for ${s.account.display_name}`);
     },
-    [log, setBudget, syncSelected],
+    [log, probeLatencies, setBudget, syncSelected],
   );
 
   const openSessionFresh = useCallback(async (): Promise<SessionInfo> => {
@@ -241,79 +238,67 @@ export function useAura() {
     if (auth.mode === "legacy") {
       return legacySession(auth.accountId!, auth.token);
     }
+    if (auth.mode === "license") return licenseSession(auth.token);
     return openSession(auth.token);
   }, []);
 
   // ---- login ----------------------------------------------------------------
 
-  const loginWithDiscord = useCallback(async (): Promise<boolean> => {
-    setAuthError(null);
-    try {
-      const start = await authStart();
-      await openBrowser(start.authorize_url);
-      const deadline = start.expires_at * 1000;
-      let token: string | null = null;
-      while (Date.now() < deadline) {
-        const poll = await authPoll(start.login_id, start.login_secret);
-        if (!poll.approved) {
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
-        }
-        token = poll.token;
-        break;
-      }
-      if (!token) throw "network";
-      saveDiscordAuth(token);
-      const session = await openSession(token);
-      finishLogin(session);
-      return true;
-    } catch (e) {
-      const kind = typeof e === "string" && isAuthKind(e) ? e : "network";
-      setAuthError(kind);
-      setPhase("loggedOut");
-      return false;
-    }
-  }, [finishLogin]);
-
-  const loginWithDiscordViaHandoff = useCallback(async (): Promise<boolean> => {
-    setAuthError(null);
-    try {
-      const start = await authStart();
-      await openBrowser(start.handoff_url || start.authorize_url);
-      const deadline = start.expires_at * 1000;
-      let token: string | null = null;
-      while (Date.now() < deadline) {
-        const poll = await authPoll(start.login_id, start.login_secret);
-        if (!poll.approved) {
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
-        }
-        token = poll.token;
-        break;
-      }
-      if (!token) throw "network";
-      saveDiscordAuth(token);
-      const session = await openSession(token);
-      finishLogin(session);
-      return true;
-    } catch (e) {
-      const kind = typeof e === "string" && isAuthKind(e) ? e : "network";
-      setAuthError(kind);
-      setPhase("loggedOut");
-      return false;
-    }
-  }, [finishLogin]);
-
-  const loginLegacy = useCallback(
-    async (accountId: string, token: string): Promise<boolean> => {
+  const discordLogin = useCallback(
+    async (viaHandoff: boolean): Promise<boolean> => {
+      loginAbortRef.current && (loginAbortRef.current.cancelled = true);
+      const abort = { cancelled: false };
+      loginAbortRef.current = abort;
       setAuthError(null);
-      if (!accountId.trim() || !token.trim()) {
-        setAuthError("badCreds");
-        return false;
-      }
       try {
-        saveLegacyAuth(accountId.trim(), token.trim());
-        const session = await legacySession(accountId.trim(), token.trim());
+        const start = await authStart();
+        await openBrowser(viaHandoff ? start.handoff_url || start.authorize_url : start.authorize_url);
+        const deadline = start.expires_at * 1000;
+        let token: string | null = null;
+        while (Date.now() < deadline && !abort.cancelled) {
+          // One flaky poll shouldn't kill the whole login — keep trying.
+          const poll = await authPoll(start.login_id, start.login_secret).catch((e) => {
+            if (typeof e === "string" && isAuthKind(e)) throw e;
+            return null;
+          });
+          if (poll?.approved) {
+            token = poll.token;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        if (abort.cancelled) return false;
+        if (!token) throw "network";
+        saveDiscordAuth(token);
+        const session = await openSession(token);
+        sessionClosedRef.current = false;
+        finishLogin(session);
+        return true;
+      } catch (e) {
+        if (abort.cancelled) return false;
+        const kind = typeof e === "string" && isAuthKind(e) ? e : "network";
+        setAuthError(kind);
+        setPhase("loggedOut");
+        return false;
+      } finally {
+        if (loginAbortRef.current === abort) loginAbortRef.current = null;
+      }
+    },
+    [finishLogin],
+  );
+  const loginWithDiscord = useCallback(() => discordLogin(false), [discordLogin]);
+  const loginWithDiscordViaHandoff = useCallback(() => discordLogin(true), [discordLogin]);
+  const cancelLogin = useCallback(() => {
+    if (loginAbortRef.current) loginAbortRef.current.cancelled = true;
+  }, []);
+
+  const loginLicense = useCallback(
+    async (key: string): Promise<boolean> => {
+      setAuthError(null);
+      try {
+        const session = await licenseSession(key);
+        saveLicenseAuth(key);
+        sessionClosedRef.current = false;
         finishLogin(session);
         return true;
       } catch (e) {
@@ -326,22 +311,29 @@ export function useAura() {
     [finishLogin],
   );
 
-  const selectServer = useCallback(
-    (tag: string): boolean => {
-      if (phaseRef.current === "connected" || phaseRef.current === "connecting") {
-        log("server selection locked while connected");
+  const loginLegacy = useCallback(
+    async (accountId: string, token: string): Promise<boolean> => {
+      setAuthError(null);
+      if (!accountId.trim() || !token.trim()) {
+        setAuthError("badCreds");
         return false;
       }
-      if (tag !== AUTO_TAG && !sessionRef.current?.config.servers.some((s) => s.tag === tag)) {
+      try {
+        const session = await legacySession(accountId.trim(), token.trim());
+        saveLegacyAuth(accountId.trim(), token.trim());
+        sessionClosedRef.current = false;
+        finishLogin(session);
+        return true;
+      } catch (e) {
+        const kind = typeof e === "string" && isAuthKind(e) ? e : "network";
+        setAuthError(kind);
+        setPhase("loggedOut");
         return false;
       }
-      if (selectedRef.current === tag) return true;
-      setSelectedServerTag(tag);
-      log(`selected server: ${tag}`);
-      return true;
     },
-    [log],
+    [finishLogin],
   );
+
 
   // ---- connect / disconnect ------------------------------------------------
 
@@ -349,12 +341,15 @@ export function useAura() {
     if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
     if (statsTimer.current) clearInterval(statsTimer.current);
     const s = sessionRef.current;
-    if (s) void closeSession(s.session_id);
+    if (s) {
+      void closeSession(s.session_id);
+      sessionClosedRef.current = true;
+    }
     setProxyAddr(null);
     setEgressIp(null);
+    setTailscale("");
     try {
-      const blockedAfter = await coreStop();
-      setBlocked(blockedAfter);
+      await coreStop();
     } catch {
       log("disconnect warning: could not stop engine");
     }
@@ -364,8 +359,11 @@ export function useAura() {
     setDownBytes(0);
     setLatencies({});
     setPhase("disconnected");
+    // Sync the ref now so a reconnect right after (server switch) isn't refused.
+    phaseRef.current = "disconnected";
+    probeLatencies(sessionRef.current?.config);
     log("disconnected");
-  }, [log]);
+  }, [log, probeLatencies]);
 
   const startStats = useCallback(() => {
     if (statsTimer.current) clearInterval(statsTimer.current);
@@ -373,26 +371,31 @@ export function useAura() {
     prevDownRef.current = 0;
     missesRef.current = 0;
     pendingUsageRef.current = 0;
+    let lastTick = 0;
     const tick = async () => {
+      // Hidden in the menu bar nobody is watching the numbers: poll the helper
+      // every 10s instead of every 2s.
+      if (document.hidden && Date.now() - lastTick < 10_000) return;
+      lastTick = Date.now();
       try {
         const stats = await coreStats();
         const running = stats.running;
-        setBlocked(stats.blocked);
         setEgressIp(stats.egress_ip);
         setProxyAddr(stats.proxy_addr);
+        setTailscale(stats.tailscale ?? "");
         if (!running) {
-          if (killSwitchRef.current) setBlocked(true);
           missesRef.current++;
           if (missesRef.current >= 3) {
             if (statsTimer.current) clearInterval(statsTimer.current);
-            setStatusLine("the tunnel engine stopped unexpectedly — tap connect to repair");
+            setStatusLine("The tunnel stopped unexpectedly. Connect again to repair it.");
             log("aura-core reports that the tunnel engine exited");
             setPhase("error");
             return;
           }
-          setStatusLine("tunnel connected — live status temporarily unavailable");
+          setStatusLine("Live status is temporarily unavailable.");
         } else {
           missesRef.current = 0;
+          setStatusLine(null);
         }
         const active = stats.active_server ?? null;
         setActiveServer(active);
@@ -416,7 +419,7 @@ export function useAura() {
         }
         if (budgetRef.current > 0 && monthUsedRef.current >= budgetRef.current) {
           log(`budget exhausted (${Math.floor(monthUsedRef.current / (1024 * 1024))} MB) — hard stop`);
-          setStatusLine("budget blown. disconnecting. we'll be so back next month.");
+          setStatusLine("Monthly data budget used up — disconnected until next month.");
           void disconnect();
           return;
         }
@@ -440,8 +443,9 @@ export function useAura() {
     setStatusLine(null);
     try {
       let s = sessionRef.current;
-      if (!s || s.expires_at * 1000 - Date.now() < 3600_000) {
+      if (!s || sessionClosedRef.current || s.expires_at * 1000 - Date.now() < 3600_000) {
         s = await openSessionFresh();
+        sessionClosedRef.current = false;
         setSession(s);
         sessionRef.current = s;
         setBudget(s.config);
@@ -458,24 +462,14 @@ export function useAura() {
       setMonthUsed(used);
       lastReportedUsageRef.current = used;
       if (budgetRef.current > 0 && used >= budgetRef.current) {
-        setStatusLine(
-          `monthly budget (${cfg.budget_gb}GB) used up — the aura is tapped out until next month`,
-        );
+        setStatusLine(`Monthly data budget (${cfg.budget_gb} GB) used up until next month.`);
         setPhase("error");
         return false;
       }
       const isAuto = tag === AUTO_TAG;
       const selected = cfg.servers.find((x) => x.tag === tag) ?? cfg.servers[0];
       if (!selected) throw new Error("no servers to connect");
-      const active = await coreStart(
-        isAuto,
-        selected,
-        cfg.servers,
-        cfg.prefer_ip,
-        killSwitchRef.current,
-        exceptionsRef.current,
-      );
-      setBlocked(false);
+      const active = await coreStart(isAuto, selected, cfg.servers, cfg.prefer_ip);
       setActiveServer(active);
       activeRef.current = active;
       setPhase("connected");
@@ -506,7 +500,7 @@ export function useAura() {
       const msg = e instanceof Error ? e.message : String(e);
       if (typeof e === "string" && e === "budgetExceeded") {
         // Over-budget is not a logout — just refuse to start the tunnel.
-        setStatusLine("monthly budget used up — the aura is tapped out until next month");
+        setStatusLine("Monthly data budget used up until next month.");
         setPhase("error");
       } else if (typeof e === "string" && isAuthKind(e)) {
         setAuthError(e);
@@ -515,13 +509,31 @@ export function useAura() {
         clearAuth();
         setPhase("loggedOut");
       } else {
-        setStatusLine(`connect failed: ${msg}`);
+        setStatusLine(msg.replace(/^network: /, "Network error: "));
         log(`ERROR ${msg}`);
         setPhase("error");
       }
       return false;
     }
   }, [disconnect, log, openSessionFresh, setBudget, startStats, syncSelected]);
+
+  const selectServer = useCallback(
+    (tag: string): boolean => {
+      if (phaseRef.current === "connecting" || phaseRef.current === "fetchingConfig") return false;
+      if (tag !== AUTO_TAG && !sessionRef.current?.config.servers.some((s) => s.tag === tag)) {
+        return false;
+      }
+      if (selectedRef.current === tag) return true;
+      setSelectedServerTag(tag);
+      selectedRef.current = tag;
+      log(`selected server: ${tag}`);
+      if (phaseRef.current === "connected") {
+        void disconnect().then(() => connect());
+      }
+      return true;
+    },
+    [connect, disconnect, log],
+  );
 
   const logout = useCallback(async () => {
     await disconnect();
@@ -540,6 +552,7 @@ export function useAura() {
       const s = await openSessionFresh();
       setSession(s);
       sessionRef.current = s;
+      sessionClosedRef.current = false;
       accountIdRef.current = accountKey(s);
       setBudget(s.config);
       syncSelected(s.config);
@@ -548,6 +561,7 @@ export function useAura() {
       setMonthUsed(used);
       log(`config refreshed: ${s.config.servers.length} servers`);
       setPhase(wasConnected ? "connected" : "disconnected");
+      if (!wasConnected) probeLatencies(s.config);
     } catch (e) {
       const msg = typeof e === "string" && isAuthKind(e) ? e : "network";
       if (isAuthKind(msg)) {
@@ -557,11 +571,11 @@ export function useAura() {
         clearAuth();
         setPhase("loggedOut");
       } else {
-        setStatusLine(`could not summon the config: ${msg}`);
+        setStatusLine("Couldn't reach api.copal.run. Check your connection and retry.");
         setPhase("error");
       }
     }
-  }, [log, openSessionFresh, setBudget, syncSelected]);
+  }, [log, openSessionFresh, probeLatencies, setBudget, syncSelected]);
 
   const checkForUpdate = useCallback(async () => {
     try {
@@ -591,12 +605,19 @@ export function useAura() {
         monthUsedRef.current = used;
         setMonthUsed(used);
         setPhase("disconnected");
+        probeLatencies(s.config);
         log(`welcome back, ${s.account.display_name}`);
       } catch (e) {
-        const kind = typeof e === "string" && isAuthKind(e) ? e : "network";
-        setAuthError(kind);
-        clearAuth();
-        setPhase("loggedOut");
+        if (typeof e === "string" && isAuthKind(e)) {
+          setAuthError(e);
+          clearAuth();
+          setPhase("loggedOut");
+        } else {
+          // Offline / API hiccup: keep the saved login and let the user retry.
+          setStatusLine("Couldn't reach api.copal.run. Check your connection and retry.");
+          log(`startup: ${e}`);
+          setPhase("error");
+        }
       }
     } else {
       setPhase("loggedOut");
@@ -615,32 +636,45 @@ export function useAura() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const setKillSwitchSetting = useCallback((v: boolean) => {
-    setKillSwitch(v);
-    killSwitchRef.current = v;
-    persistSettings({ killSwitch: v, exceptions: exceptionsRef.current });
+  // ---- menu bar ------------------------------------------------------------
+  // The tray forwards clicks as events; keep the latest handlers in a ref so
+  // the listeners are registered once.
+  const trayActions = useRef({ connect, disconnect });
+  trayActions.current = { connect, disconnect };
+  useEffect(() => {
+    const unlisteners = [
+      listen("tray://toggle", () => {
+        if (phaseRef.current === "connected") void trayActions.current.disconnect();
+        else if (phaseRef.current !== "connecting" && phaseRef.current !== "fetchingConfig") {
+          void trayActions.current.connect();
+        }
+      }),
+      listen("tray://quit", async () => {
+        // Don't leave the tunnel up with nobody sending heartbeats.
+        if (phaseRef.current === "connected" || phaseRef.current === "connecting") {
+          await trayActions.current.disconnect().catch(() => {});
+        }
+        await invoke("app_quit");
+      }),
+    ];
+    return () => unlisteners.forEach((u) => void u.then((f) => f()));
   }, []);
 
-  const addException = useCallback((value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    setExceptions((prev) => {
-      if (prev.includes(trimmed)) return prev;
-      const next = [...prev, trimmed];
-      exceptionsRef.current = next;
-      persistSettings({ killSwitch: killSwitchRef.current, exceptions: next });
-      return next;
-    });
-  }, []);
-
-  const removeException = useCallback((value: string) => {
-    setExceptions((prev) => {
-      const next = prev.filter((x) => x !== value);
-      exceptionsRef.current = next;
-      persistSettings({ killSwitch: killSwitchRef.current, exceptions: next });
-      return next;
-    });
-  }, []);
+  useEffect(() => {
+    const label: Record<Phase, string> = {
+      loggedOut: "Signed out",
+      disconnected: "Disconnected",
+      fetchingConfig: "Loading…",
+      connecting: "Connecting…",
+      connected: `Connected${activeServer ? ` · ${activeServer.charAt(0).toUpperCase()}${activeServer.slice(1)}` : ""}`,
+      error: "Not connected",
+    };
+    void invoke("tray_update", {
+      status: label[phase],
+      connected: phase === "connected",
+      busy: phase === "connecting" || phase === "fetchingConfig",
+    }).catch(() => {});
+  }, [phase, activeServer]);
 
   const budgetFraction = budgetBytes > 0 ? monthUsed / budgetBytes : 0;
   const budgetWarn = budgetBytes > 0 && budgetFraction >= 0.8 && !(monthUsed >= budgetBytes);
@@ -665,24 +699,22 @@ export function useAura() {
     authError,
     updateVersion,
     logs,
-    killSwitch,
-    exceptions,
-    blocked,
     egressIp,
     proxyAddr,
+    tailscale,
     debugMode,
-    coreDetected: coreDetectedState,
+    helper,
+    helperBusy,
     toggleDebug,
     installCore,
     uninstallCore,
     installError,
     dismissInstallError,
-    setKillSwitch: setKillSwitchSetting,
-    addException,
-    removeException,
     init,
     loginWithDiscord,
     loginWithDiscordViaHandoff,
+    cancelLogin,
+    loginLicense,
     loginLegacy,
     selectServer,
     connect,

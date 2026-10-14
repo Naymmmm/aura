@@ -37,12 +37,12 @@ export function LogsPage({ aura, onClose }: { aura: Aura; onClose: () => void })
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      <div className="flex items-center gap-2 px-4 pb-2 pt-4">
-        <button onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="back">
-          <ArrowLeft className="size-5" />
+    <div className="flex h-screen flex-col bg-background">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border/60 px-2">
+        <button onClick={onClose} className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Back">
+          <ArrowLeft className="size-4" />
         </button>
-        <h1 className="text-sm font-bold">Diagnostics</h1>
+        <h1 className="text-sm font-semibold">App log</h1>
         <div className="ml-auto flex items-center gap-1">
           <button onClick={copyVisible} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="copy visible logs">
             <Copy className="size-4" />
@@ -53,7 +53,7 @@ export function LogsPage({ aura, onClose }: { aura: Aura; onClose: () => void })
         </div>
       </div>
 
-      <div className="flex items-center gap-2 px-4 pb-3 pt-1">
+      <div className="flex items-center gap-2 px-4 pb-3 pt-3">
         <div className="relative flex-1">
           <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -84,7 +84,7 @@ export function LogsPage({ aura, onClose }: { aura: Aura; onClose: () => void })
             {entries.map((e, i) => (
               <div
                 key={`${e.timestamp}-${i}`}
-                className={cn("rounded-xl border-l-[3px] bg-card px-3 py-2.5 text-xs text-muted-foreground", levelBorder[e.level])}
+                className={cn("rounded-md border-l-2 bg-card px-3 py-2 text-xs text-muted-foreground", levelBorder[e.level])}
               >
                 <span className={cn("mr-1.5 font-mono font-bold", levelColor[e.level])}>
                   {e.level.toUpperCase()}

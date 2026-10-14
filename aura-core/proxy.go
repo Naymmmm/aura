@@ -153,6 +153,22 @@ func (p *multiProxy) Probe(ctx context.Context) error {
 	return nil
 }
 
+// CheckActive is the cheap liveness check: a SOCKS CONNECT through the active
+// transport proves NaiveProxy and the server are up without a TLS handshake.
+func (p *multiProxy) CheckActive(ctx context.Context) error {
+	p.mu.RLock()
+	active := p.active
+	p.mu.RUnlock()
+	if active < 0 || active >= len(p.endpoints) {
+		return errors.New("no active NaiveProxy transport")
+	}
+	conn, err := dialSOCKS(ctx, p.endpoints[active].addr, socks5.ParseAddrString("1.1.1.1:443"))
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
 func (p *multiProxy) Snapshot() (string, map[string]int) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

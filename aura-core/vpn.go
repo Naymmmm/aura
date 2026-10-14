@@ -12,6 +12,7 @@ import (
 	"github.com/xjasonlyu/tun2socks/v2/core/device"
 	"github.com/xjasonlyu/tun2socks/v2/core/device/tun"
 	"github.com/xjasonlyu/tun2socks/v2/core/option"
+	t2log "github.com/xjasonlyu/tun2socks/v2/log"
 	"github.com/xjasonlyu/tun2socks/v2/tunnel"
 	"github.com/xjasonlyu/tun2socks/v2/tunnel/statistic"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -24,10 +25,14 @@ type runtimeStats struct {
 	UploadTotal   int64          `json:"upload_total"`
 	DownloadTotal int64          `json:"download_total"`
 	LastError     string         `json:"last_error,omitempty"`
+	// Tailscale: "" (not running), "ok" (coexisting) or "rerouted" (Aura
+	// pointed a hijacked 100.64/10 route back at Tailscale).
+	Tailscale string `json:"tailscale,omitempty"`
 }
 
 type routeState interface {
 	Close() error
+	TailscaleState() string
 }
 
 type vpnRuntime struct {
@@ -45,6 +50,14 @@ type vpnRuntime struct {
 	stopErr   error
 	errMu     sync.Mutex
 	lastError string
+}
+
+func init() {
+	// tun2socks logs every TCP/UDP flow at info level; on a busy machine that
+	// is thousands of synchronous writes a minute into a log nobody rotates.
+	if logger, err := t2log.NewLeveled(t2log.WarnLevel); err == nil {
+		t2log.SetLogger(logger)
+	}
 }
 
 func startVPN(stateDir, naivePath string, cfg auraConfig) (_ *vpnRuntime, err error) {
@@ -74,7 +87,8 @@ func startVPN(stateDir, naivePath string, cfg auraConfig) (_ *vpnRuntime, err er
 	rt.manager = statistic.DefaultManager
 	rt.manager.ResetStatistic()
 	rt.tunnel = tunnel.New(rt.proxy, rt.manager)
-	rt.tunnel.SetUDPTimeout(90 * time.Second)
+	// Idle UDP flows (QUIC, DNS) each hold a goroutine and a UoT stream.
+	rt.tunnel.SetUDPTimeout(60 * time.Second)
 	rt.tunnel.ProcessAsync()
 	rt.device, err = tun.Open(tunDeviceName(), uint32(cfg.TUN.MTU))
 	if err != nil {
@@ -102,22 +116,33 @@ func startVPN(stateDir, naivePath string, cfg auraConfig) (_ *vpnRuntime, err er
 	return rt, nil
 }
 
+// healthLoop keeps an eye on the tunnel as cheaply as possible: real traffic
+// is proof of life, an idle tunnel gets a SOCKS-only check once a minute, and
+// the full TLS probe (which also picks the fastest server) only runs when that
+// check fails.
 func (r *vpnRuntime) healthLoop(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
+	var lastTotal int64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			err := r.proxy.Probe(probeCtx)
-			cancel()
-			if err != nil {
-				r.setError(err)
-			} else {
+			snapshot := r.manager.Snapshot()
+			total := snapshot.UploadTotal + snapshot.DownloadTotal
+			if total != lastTotal {
+				lastTotal = total
 				r.setError(nil)
+				continue
 			}
+			checkCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			err := r.proxy.CheckActive(checkCtx)
+			if err != nil {
+				err = r.proxy.Probe(checkCtx)
+			}
+			cancel()
+			r.setError(err)
 		}
 	}
 }
@@ -183,6 +208,7 @@ func (r *vpnRuntime) Stats() runtimeStats {
 		UploadTotal:   snapshot.UploadTotal,
 		DownloadTotal: snapshot.DownloadTotal,
 		LastError:     r.LastError(),
+		Tailscale:     r.routes.TailscaleState(),
 	}
 }
 

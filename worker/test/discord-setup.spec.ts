@@ -2,15 +2,16 @@ import { describe, expect, it } from 'vitest';
 import readme from '../../README.md?raw';
 import packageJson from '../package.json?raw';
 import wrangler from '../wrangler.toml?raw';
-import commands from '../scripts/register-discord-commands.mjs?raw';
+import script from '../scripts/register-discord-commands.mjs?raw';
+import commands from '../src/discord_commands.json';
 
 describe('Discord bot deployment setup', () => {
   it('registers commands and schedules expired-role reconciliation', () => {
     expect(packageJson).toContain('register:discord');
     expect(wrangler).toContain('[triggers]');
     expect(wrangler).toContain('crons = ["0 * * * *"]');
-    expect(commands).toContain("name: 'upgrade'");
-    expect(commands).toContain("name: 'credits'");
+    expect(script).toContain('discord_commands.json');
+    expect(commands.map((c) => c.name)).toEqual(expect.arrayContaining(['upgrade', 'credits', 'license']));
   });
 
   it('documents the interactions endpoint, app callback, and bot bindings', () => {

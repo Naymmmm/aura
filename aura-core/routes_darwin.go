@@ -19,6 +19,16 @@ type darwinRoutes struct {
 	bypass      []net.IP
 	tunnelCIDRs []string
 	ipv6Route   bool
+	tailnet     tailnetRoute
+}
+
+// tailnetRoute records how Aura pointed 100.64.0.0/10 at Tailscale so Close
+// can put things back exactly as they were.
+type tailnetRoute struct {
+	iface     string // Tailscale's utun, "" when untouched
+	added     bool   // Aura created the route
+	prevGW    string // previous gateway when Aura changed an existing route
+	prevIface string // previous interface when Aura changed an existing route
 }
 
 func tunDeviceName() string { return "utun123" }
@@ -61,7 +71,95 @@ func configureRoutes(deviceName string, cfg auraConfig) (_ routeState, err error
 		return nil, err
 	}
 	state.ipv6Route = true
+	state.tailnet = keepTailnetOnTailscale()
 	return state, nil
+}
+
+// keepTailnetOnTailscale makes sure 100.64.0.0/10 goes to Tailscale's utun.
+// Captive/filtered networks (and stale VPN leftovers) often leave a
+// 100.64/10 route on the physical gateway, which silently black-holes every
+// tailnet peer. Best-effort: Tailscale problems must never block Aura.
+func keepTailnetOnTailscale() tailnetRoute {
+	iface := tailscaleInterface()
+	if iface == "" {
+		return tailnetRoute{}
+	}
+	gw, current := darwinRouteFor("100.64.0.0/10")
+	if current == iface {
+		return tailnetRoute{}
+	}
+	if current == "" {
+		if _, err := runCommand("/sbin/route", "-n", "add", "-net", "100.64.0.0/10", "-interface", iface); err != nil {
+			return tailnetRoute{}
+		}
+		return tailnetRoute{iface: iface, added: true}
+	}
+	if _, err := runCommand("/sbin/route", "-n", "change", "-net", "100.64.0.0/10", "-interface", iface); err != nil {
+		return tailnetRoute{}
+	}
+	return tailnetRoute{iface: iface, prevGW: gw, prevIface: current}
+}
+
+// darwinRouteFor returns the gateway and interface of an exact network route,
+// or empty strings if the lookup only matched a broader route.
+func darwinRouteFor(cidr string) (gateway, iface string) {
+	output, err := runCommand("/sbin/route", "-n", "get", "-net", cidr)
+	if err != nil {
+		return "", ""
+	}
+	return parseDarwinTailnetRoute(output)
+}
+
+// parseDarwinTailnetRoute reads `route -n get -net 100.64.0.0/10` output and
+// returns its gateway/interface only when the match is that exact network.
+func parseDarwinTailnetRoute(output string) (gateway, iface string) {
+	var dest, mask string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		switch fields[0] {
+		case "destination:":
+			dest = fields[1]
+		case "mask:":
+			mask = fields[1]
+		case "gateway:":
+			gateway = fields[1]
+		case "interface:":
+			iface = fields[1]
+		}
+	}
+	if (dest != "100.64.0.0" && dest != "100.64") || mask != "255.192.0.0" {
+		return "", ""
+	}
+	return gateway, iface
+}
+
+func (t *tailnetRoute) restore() error {
+	if t.iface == "" {
+		return nil
+	}
+	var err error
+	if t.added {
+		_, err = runCommand("/sbin/route", "-n", "delete", "-net", "100.64.0.0/10", "-interface", t.iface)
+	} else if net.ParseIP(t.prevGW) != nil {
+		_, err = runCommand("/sbin/route", "-n", "change", "-net", "100.64.0.0/10", t.prevGW)
+	} else if t.prevIface != "" {
+		_, err = runCommand("/sbin/route", "-n", "change", "-net", "100.64.0.0/10", "-interface", t.prevIface)
+	}
+	*t = tailnetRoute{}
+	return err
+}
+
+func (r *darwinRoutes) TailscaleState() string {
+	if r.tailnet.iface != "" {
+		return "rerouted"
+	}
+	if tailscaleInterface() != "" {
+		return "ok"
+	}
+	return ""
 }
 
 func darwinDefaultGateway() (string, error) {
@@ -80,6 +178,9 @@ func darwinDefaultGateway() (string, error) {
 
 func (r *darwinRoutes) Close() error {
 	var errs []error
+	if err := r.tailnet.restore(); err != nil {
+		errs = append(errs, err)
+	}
 	if r.ipv6Route {
 		if _, err := runCommand("/sbin/route", "-n", "delete", "-inet6", "-net", "2000::/3"); err != nil {
 			errs = append(errs, err)

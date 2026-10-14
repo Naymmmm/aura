@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	version       = "26.1.0"
+	version       = "26.3.0"
 	defaultListen = "127.0.0.1:45873"
 )
 
@@ -81,6 +82,10 @@ func main() {
 		}
 		*naivePath = filepath.Join(filepath.Dir(mustExecutable()), name)
 	}
+
+	// The helper runs all day in the background: keep the Go heap small. This is
+	// a soft limit — the GC works harder near it instead of growing the heap.
+	debug.SetMemoryLimit(48 << 20)
 
 	c := &core{stateDir: *stateDir, naivePath: *naivePath}
 	mux := http.NewServeMux()

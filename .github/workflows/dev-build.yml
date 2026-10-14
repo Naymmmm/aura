@@ -11,7 +11,7 @@ env:
 
 jobs:
   windows:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - uses: actions/checkout@v4
 
@@ -108,7 +108,7 @@ jobs:
           path: dev-windows-amd64.zip
 
   macos:
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -177,7 +177,7 @@ jobs:
 
   publish:
     needs: [windows, macos]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:

@@ -16,7 +16,7 @@ use crate::models::{AuthErrorKind, AuthPoll, AuthStart, ServerConfig, SessionInf
 /// Default API base, matching the Flutter app.
 pub const API_BASE: &str = "https://api.copal.run";
 /// The version this build ships with (bump per release).
-pub const APP_VERSION: &str = "v26.1.0";
+pub const APP_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// A transport/session failure carried as a small typed error so the command
 /// layer can tell the frontend exactly which Aura error it is.
@@ -45,12 +45,19 @@ impl ApiError {
     }
 }
 
+/// One shared client so TLS sessions and connections to api.copal.run are
+/// reused instead of re-handshaking on every call.
 fn client() -> Result<Client, ApiError> {
-    Client::builder()
+    static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let c = Client::builder()
         .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| ApiError::new(AuthErrorKind::Network, format!("http client: {e}")))
+        .map_err(|e| ApiError::new(AuthErrorKind::Network, format!("http client: {e}")))?;
+    Ok(CLIENT.get_or_init(|| c).clone())
 }
 
 fn map_status(status: StatusCode, body: &str) -> AuthErrorKind {
@@ -166,13 +173,22 @@ pub async fn open_session(token: &str) -> Result<SessionInfo, ApiError> {
     Err(ApiError::new(map_status(status, &body), body))
 }
 
+/// POST /v1/session with a license key — no Discord involved.
+pub async fn license_session(key: &str) -> Result<SessionInfo, ApiError> {
+    body_session(serde_json::json!({ "license_key": key })).await
+}
+
 /// POST /v1/session with legacy account_id + token credentials.
 pub async fn legacy_session(account_id: &str, token: &str) -> Result<SessionInfo, ApiError> {
+    body_session(serde_json::json!({ "account_id": account_id, "token": token })).await
+}
+
+async fn body_session(body: serde_json::Value) -> Result<SessionInfo, ApiError> {
     let resp = client()?
         .post(format!("{API_BASE}/v1/session"))
         .header("accept", "application/json")
         .header("content-type", "application/json")
-        .json(&serde_json::json!({ "account_id": account_id, "token": token }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| ApiError::new(AuthErrorKind::Network, e.to_string()))?;
@@ -278,6 +294,10 @@ fn version_parts(v: &str) -> Option<[i32; 3]> {
 pub fn platform_key() -> &'static str {
     if cfg!(target_os = "macos") {
         "latest-macos"
+    } else if cfg!(target_os = "linux") {
+        "latest-linux"
+    } else if cfg!(target_arch = "aarch64") {
+        "latest-windows-arm64"
     } else {
         "latest"
     }

@@ -7,6 +7,7 @@ import type { Sessions } from './auth';
 import { releaseAccountSessions } from './auth';
 import { handleRelease } from './releases';
 import { getDiscordAccount, putDiscordAccount } from './accounts_v2';
+import { registerDiscordCommands } from './discord_bot';
 
 const COOKIE = 'aura_admin';
 const ADMIN_TTL = 24 * 3600;
@@ -122,6 +123,15 @@ export async function handleAdminRoute(
   if (resource === 'release') {
     if (req.method !== 'POST') return adminJson({ error: 'method_not_allowed' }, 405);
     return handleRelease(req, env);
+  }
+
+  if (resource === 'commands') {
+    if (req.method !== 'POST') return adminJson({ error: 'method_not_allowed' }, 405);
+    try {
+      return adminJson({ registered: await registerDiscordCommands(env) }, 200);
+    } catch (error) {
+      return adminJson({ error: error instanceof Error ? error.message : String(error) }, 502);
+    }
   }
 
   if (resource === 'accounts') {

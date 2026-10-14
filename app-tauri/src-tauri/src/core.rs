@@ -21,13 +21,29 @@ use serde::Serialize;
 
 use crate::models::{AuthErrorKind, ServerInfo};
 
-pub const CORE_VERSION: &str = "26.1.0";
+pub const CORE_VERSION: &str = "26.3.0";
 const CORE_BASE: &str = "http://127.0.0.1:45873";
 const PORT: u16 = 443;
+
+/// This app's data dir, set once at startup. `install` writes the daemon token
+/// here, so it's the first place to look on every OS.
+static APP_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_app_data_dir(dir: std::path::PathBuf) {
+    let _ = APP_DATA_DIR.set(dir);
+}
+
+fn read_token(path: &Path) -> Option<String> {
+    let t = std::fs::read_to_string(path).ok()?.trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
 
 /// Locate the aura-core API bearer token. The daemon validates the
 /// Authorization header against the file it was started with (`--token-file`).
 fn find_token() -> Option<String> {
+    if let Some(t) = APP_DATA_DIR.get().and_then(|d| read_token(&d.join("aura-core").join("api.token"))) {
+        return Some(t);
+    }
     if let Ok(p) = std::env::var("AURA_CORE_TOKEN_FILE") {
         if !p.is_empty() {
             if let Ok(t) = std::fs::read_to_string(&p) {
@@ -38,20 +54,27 @@ fn find_token() -> Option<String> {
             }
         }
     }
-    let home = std::env::var("HOME").ok()?;
-    let candidates = [
-        format!("{home}/Library/Application Support/dev.copal.aura/aura-core/api.token"),
-        format!("{home}/Library/Application Support/com.copal.aura/aura-core/api.token"),
-    ];
-    for path in candidates {
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            let t = raw.trim().to_string();
-            if !t.is_empty() {
-                return Some(t);
+    // Fall back to where the Flutter build and older Tauri builds kept it.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if cfg!(target_os = "macos") {
+        if let Ok(home) = std::env::var("HOME") {
+            for id in ["dev.copal.aura", "com.copal.aura"] {
+                candidates.push(format!("{home}/Library/Application Support/{id}/aura-core/api.token").into());
             }
         }
+    } else if cfg!(windows) {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            for id in ["com.copal.aura", "dev.copal.aura"] {
+                candidates.push(Path::new(&appdata).join(id).join("aura-core").join("api.token"));
+            }
+        }
+    } else if let Ok(home) = std::env::var("HOME") {
+        let data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{home}/.local/share"));
+        for id in ["com.copal.aura", "dev.copal.aura"] {
+            candidates.push(format!("{data}/{id}/aura-core/api.token").into());
+        }
     }
-    None
+    candidates.iter().find_map(|p| read_token(p))
 }
 
 /// A single authenticated request to the daemon.
@@ -72,7 +95,9 @@ fn request(
     } else {
         Duration::from_secs(30)
     };
-    let mut req = reqwest::blocking::Client::new()
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    let mut req = CLIENT
+        .get_or_init(reqwest::blocking::Client::new)
         .request(method, format!("{CORE_BASE}{path}"))
         .header("authorization", format!("Bearer {token}"))
         .timeout(timeout);
@@ -103,7 +128,7 @@ fn probe(host: &str, timeout: Duration) -> Option<u64> {
     }
 }
 
-fn probe_all(servers: &[ServerInfo], prefer_ip: bool) -> HashMap<String, i64> {
+pub fn probe_all(servers: &[ServerInfo], prefer_ip: bool) -> HashMap<String, i64> {
     std::thread::scope(|s| {
         let handles: Vec<_> = servers
             .iter()
@@ -164,6 +189,8 @@ pub struct CoreStats {
     pub egress_ip: Option<String>,
     pub proxy_addr: Option<String>,
     pub last_error: Option<String>,
+    /// "" (no Tailscale), "ok" or "rerouted" — from aura-core 26.3+.
+    pub tailscale: String,
 }
 
 fn status_value(v: &serde_json::Value) -> CoreStatus {
@@ -201,6 +228,7 @@ fn stats_value(v: &serde_json::Value) -> CoreStats {
         egress_ip: None,
         proxy_addr: None,
         last_error: v.get("last_error").and_then(|x| x.as_str()).map(String::from),
+        tailscale: v.get("tailscale").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         latencies,
     }
 }
@@ -214,15 +242,13 @@ pub fn start(
     selected: &ServerInfo,
     servers: &[ServerInfo],
     prefer_ip: bool,
-    _kill_switch: bool,
-    _exceptions: Vec<String>,
 ) -> Result<String, String> {
     if servers.is_empty() {
         return Err("no servers to connect".to_string());
     }
-    let latencies = probe_all(servers, prefer_ip);
+    // Only auto mode needs the probe; a manual pick skips straight to start.
     let chosen = if auto {
-        latencies
+        probe_all(servers, prefer_ip)
             .iter()
             .min_by_key(|(_, ms)| **ms)
             .map(|(tag, _)| servers.iter().find(|s| &s.tag == tag).unwrap().clone())
@@ -268,7 +294,7 @@ pub fn start(
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(200));
     }
     Err("Aura Core started but no server came alive".to_string())
 }
@@ -317,39 +343,52 @@ pub fn _kind_string(kind: AuthErrorKind) -> &'static str {
 
 // ---- aura-core detection, install, uninstall --------------------------------
 
-/// True when the privileged aura-core helper is installed and reachable.
-pub fn detected() -> bool {
-    if find_token().is_none() {
-        return false;
-    }
-    matches!(
-        request("GET", "/v1/status", None).map(|r| r.status().as_u16()),
-        Ok(200)
-    )
+#[derive(Debug, Serialize, Default)]
+pub struct HelperInfo {
+    /// The helper answered with our token.
+    pub installed: bool,
+    /// Version the running helper reports.
+    pub version: Option<String>,
+    /// Older than the helper bundled with this app — reinstall to get fixes
+    /// like Tailscale coexistence.
+    pub outdated: bool,
+    pub bundled_version: &'static str,
 }
 
-fn random_token() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let mut h = nanos ^ ((std::process::id() as u128) << 64);
-    let mut out = String::with_capacity(64);
-    for _ in 0..32 {
-        h = h
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        out.push_str(&format!("{:02x}", (h >> 64) as u8));
+/// Probe the privileged helper: installed, and is it current?
+pub fn helper_info() -> HelperInfo {
+    let mut info = HelperInfo { bundled_version: CORE_VERSION, ..Default::default() };
+    if find_token().is_none() {
+        return info;
     }
-    out
+    if let Ok(v) = request("GET", "/v1/status", None).and_then(body_json) {
+        info.installed = true;
+        let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("0.0.0").to_string();
+        info.outdated = version_lt(&version, CORE_VERSION);
+        info.version = Some(version);
+    }
+    info
+}
+
+fn version_lt(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    parse(a) < parse(b)
+}
+
+/// The token guards a root-level API, so it must come from the OS CSPRNG.
+fn random_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("random token: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn write_token(app_data_dir: &Path) -> Result<std::path::PathBuf, String> {
     let dir = app_data_dir.join("aura-core");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = dir.join("api.token");
-    std::fs::write(&file, random_token()).map_err(|e| e.to_string())?;
+    std::fs::write(&file, random_token()?).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         let _ = Command::new("chmod").arg("600").arg(&file).status();
@@ -378,16 +417,20 @@ pub fn install(app_data_dir: &Path, resource_dir: &Path) -> Result<(), String> {
     } else if cfg!(target_os = "macos") {
         install_macos(&aura, &naive, &token_file)
     } else {
-        Err("unsupported platform".to_string())
+        install_linux(&aura, &naive, &token_file)
     }
 }
 
 /// Locate the bundled aura-core + naive binaries, wherever Tauri placed them.
 fn find_bundle(resource_dir: &Path, core: &str, naive: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let candidates = [
+    #[allow(unused_mut)]
+    let mut candidates = vec![
         resource_dir.join("aura-core"),
         resource_dir.join("resources").join("aura-core"),
     ];
+    // `tauri dev` doesn't reliably copy resources; use the source folder.
+    #[cfg(debug_assertions)]
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("aura-core"));
     for dir in candidates {
         let a = dir.join(core);
         let n = dir.join(naive);
@@ -448,17 +491,60 @@ EOF\n\
         shell_quote(install),
         shell_quote(runtime),
         shell_quote(plist),
-        token_file.display(),
-        aura.display(),
-        naive.display()
+        // These live under "Application Support"; unquoted, the space splits
+        // the assignment and `set -e` aborts the install.
+        shell_quote(&token_file.display().to_string()),
+        shell_quote(&aura.display().to_string()),
+        shell_quote(&naive.display().to_string())
     );
     let esc = sh.replace('\\', "\\\\").replace('"', "\\\"");
     let apple = format!("do shell script \"{}\" with administrator privileges", esc);
-    let status = Command::new("osascript")
+    let output = Command::new("osascript")
         .arg("-e")
         .arg(&apple)
-        .status()
+        .output()
         .map_err(|e| format!("osascript: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("-128") {
+        Err("admin install was cancelled".to_string())
+    } else {
+        Err(format!("admin install failed: {}", stderr.trim()))
+    }
+}
+
+fn install_linux(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), String> {
+    // An AppImage runs from a per-user FUSE mount that root can't read, so
+    // stage the binaries somewhere pkexec's root shell can.
+    let stage = std::env::temp_dir().join("aura-core-install");
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    let (aura_staged, naive_staged) = (stage.join("aura-core"), stage.join("naive"));
+    std::fs::copy(aura, &aura_staged).map_err(|e| format!("stage aura-core: {e}"))?;
+    std::fs::copy(naive, &naive_staged).map_err(|e| format!("stage naive: {e}"))?;
+    let (aura, naive) = (aura_staged.as_path(), naive_staged.as_path());
+    let sh = format!(
+        "set -eu\n\
+         INSTALL=/opt/aura-core\nRUNTIME=/var/lib/aura-core\nUNIT=/etc/systemd/system/aura-core.service\n\
+         systemctl stop aura-core 2>/dev/null || true\n\
+         mkdir -p \"$INSTALL\" \"$RUNTIME\"\nchmod 700 \"$RUNTIME\"\n\
+         install -m 755 {aura} \"$INSTALL/aura-core\"\ninstall -m 755 {naive} \"$INSTALL/naive\"\n\
+         cat > \"$UNIT\" <<EOF\n\
+[Unit]\nDescription=Aura Core VPN helper\nAfter=network-online.target\nWants=network-online.target\n\
+[Service]\nExecStart=$INSTALL/aura-core serve --state-dir $RUNTIME --token-file {token}\nRestart=on-failure\nRestartSec=2\n\
+[Install]\nWantedBy=multi-user.target\nEOF\n\
+         systemctl daemon-reload\nsystemctl enable --now aura-core\n",
+        aura = shell_quote(&aura.display().to_string()),
+        naive = shell_quote(&naive.display().to_string()),
+        token = shell_quote(&token_file.display().to_string()),
+    );
+    // pkexec shows the desktop's native admin prompt (polkit).
+    let status = Command::new("pkexec")
+        .args(["/bin/sh", "-c", &sh])
+        .status()
+        .map_err(|e| format!("pkexec: {e} — install polkit, or run the helper install as root"))?;
     if status.success() {
         Ok(())
     } else {
@@ -483,6 +569,9 @@ Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Forc
 Start-Sleep -Milliseconds 600
 Copy-Item '{aura}' $install\aura-core.exe -Force
 Copy-Item '{naive}' $install\naive.exe -Force
+# aura-core loads wintun.dll from its own folder to create the TUN adapter.
+$wintun = Join-Path (Split-Path '{naive}') 'wintun.dll'
+if (Test-Path $wintun) {{ Copy-Item $wintun $install\wintun.dll -Force }}
 $args = 'serve --state-dir "' + $runtime + '" --token-file "' + $tokenFile + '"'
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -536,6 +625,10 @@ pub fn uninstall(app_data_dir: &Path) -> Result<(), String> {
     if cfg!(target_os = "macos") {
         let _ = Command::new("launchctl").args(["bootout", "system/com.copal.aura.core"]).status();
         let _ = std::fs::remove_file("/Library/LaunchDaemons/com.copal.aura.core.plist");
+    } else if cfg!(target_os = "linux") {
+        let _ = Command::new("pkexec")
+            .args(["/bin/sh", "-c", "systemctl disable --now aura-core; rm -f /etc/systemd/system/aura-core.service; rm -rf /opt/aura-core; systemctl daemon-reload"])
+            .status();
     } else if cfg!(windows) {
         let _ = Command::new("powershell.exe").args([
             "-NoProfile",

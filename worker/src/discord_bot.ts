@@ -1,6 +1,8 @@
 import { getDiscordAccount, putDiscordAccount, upsertDiscordIdentity } from './accounts_v2';
 import type { DiscordAccount } from './accounts_v2';
 import { nowSec } from './util';
+import { issueLicenseKey, licenseFileContents } from './licenses';
+import commands from './discord_commands.json';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const EPHEMERAL = 64;
@@ -79,6 +81,7 @@ export async function handleVerifiedDiscordInteraction(interaction: unknown, env
   }
   if (type !== 2) return message('Unknown Action', 'That Aura action is not supported.', RED);
   const commandName = stringProperty(data, 'name');
+  if (commandName === 'license') return license(interaction, env, actor);
   if (!actor.roles.includes(env.DISCORD_STAFF_ROLE_ID)) {
     return message('Staff Only', 'You do not have the Aura staff role required for this command.', RED);
   }
@@ -126,6 +129,57 @@ async function getOrCreateAccount(env: Env, discordId: string): Promise<DiscordA
   };
 }
 
+// /license — any member gets (or rotates) their own key; staff may pass `user`
+// to issue one for someone else. Replies privately with the key + a file.
+async function license(interaction: unknown, env: Env, actor: Actor): Promise<Response> {
+  const targetId = optionString(interaction, 'user');
+  const forOther = !!targetId && targetId !== actor.id;
+  if (forOther && !actor.roles.includes(env.DISCORD_STAFF_ROLE_ID)) {
+    return message('Staff Only', 'Only Aura staff can issue a license for another member.', RED);
+  }
+  const account = forOther
+    ? await getOrCreateAccount(env, targetId)
+    : await upsertDiscordIdentity(env, { discordId: actor.id, username: actor.username, displayName: actor.displayName });
+  if (forOther) await putDiscordAccount(env, account);
+  const key = await issueLicenseKey(env, account.discord_id);
+  await recordAudit(env, 'license_issued', actor, account, {});
+  const who = forOther ? `<@${account.discord_id}>'s` : 'Your';
+  const payload = {
+    type: 4,
+    data: {
+      flags: EPHEMERAL,
+      embeds: [{
+        title: 'Aura License',
+        description: `${who} license key:\n\`\`\`\n${key}\n\`\`\`\nPaste it into the Aura app, or open the attached \`.auralicense\` file with it. No Discord needed after this.\n\nRunning \`/license\` again replaces this key — the old one stops working.`,
+        color: GREEN,
+        footer: { text: 'Aura VPN • keep this private' },
+      }],
+      attachments: [{ id: 0, filename: 'aura.auralicense' }],
+      allowed_mentions: { parse: [] },
+    },
+  };
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify(payload));
+  form.append('files[0]', new Blob([licenseFileContents(key)], { type: 'text/plain' }), 'aura.auralicense');
+  return new Response(form, { headers: { 'cache-control': 'no-store' } });
+}
+
+/** Register the slash commands with Discord using the bot token the Worker
+ *  already holds — so staff never need to handle it. Returns how many Discord accepted. */
+export async function registerDiscordCommands(env: Env): Promise<number> {
+  const response = await fetch(
+    `${DISCORD_API}/applications/${env.DISCORD_CLIENT_ID}/guilds/${env.DISCORD_GUILD_ID}/commands`,
+    {
+      method: 'PUT',
+      headers: { authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify(commands),
+    }
+  );
+  if (!response.ok) throw new Error(`Discord ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const registered: unknown = await response.json();
+  return Array.isArray(registered) ? registered.length : 0;
+}
+
 async function claimTrial(env: Env, actor: Actor): Promise<Response> {
   const existing = await getDiscordAccount(env, actor.id);
   if (existing?.trial_claimed_at) return message('Trial Already Claimed', 'This Discord account has already used its Aura free trial.', AMBER);
@@ -140,7 +194,7 @@ async function claimTrial(env: Env, actor: Actor): Promise<Response> {
   await putDiscordAccount(env, account);
   await recordAudit(env, 'trial_claimed', actor, account, { days: 7, budget_gb: 1 });
   await syncCustomerRole(env, account);
-  return message('Free Trial Activated', `Your **7-day / 1 GB** Aura trial is live. Sign in to the Aura app with Discord to connect.\n\nExpires <t:${account.expires_at}:R>.`, GREEN);
+  return message('Free Trial Activated', `Your **7-day / 1 GB** Aura trial is live. Run \`/license\` to get your key, then paste it into the Aura app to connect.\n\nExpires <t:${account.expires_at}:R>.`, GREEN);
 }
 
 async function manageDays(interaction: unknown, env: Env, actor: Actor): Promise<Response> {
