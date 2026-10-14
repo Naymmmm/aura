@@ -11,7 +11,7 @@ import 'package:http/testing.dart';
 
 void main() {
   test('uses the year.minor.hotfix release version', () {
-    expect(UpdateService.appVersion, 'v26.2.0');
+    expect(UpdateService.appVersion, 'v26.2.1');
   });
 
   test(

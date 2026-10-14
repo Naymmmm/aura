@@ -13,7 +13,7 @@ import 'package:path_provider/path_provider.dart';
 class AuraCoreManager {
   AuraCoreManager._();
 
-  static const version = '26.2.0';
+  static const version = '26.1.0';
   static const _port = 45873;
   static String? _dir;
   static String? _token;
