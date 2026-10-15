@@ -1,6 +1,6 @@
 [package]
 name = "aura-core"
-version = "26.3.0"
+version = "26.3.1"
 edition = "2021"
 publish = false
 description = "Aura's privileged tunnel supervisor"
@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+etherparse = "0.20"
 if-addrs = "0.15"
 ipstack = "1.0"
 log = { version = "0.4", features = ["std"] }
@@ -35,4 +36,3 @@ strip = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-etherparse = "0.20"

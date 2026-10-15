@@ -8,21 +8,28 @@ use std::sync::{Arc, Mutex};
 use std::task::{ready, Context, Poll};
 use std::time::{Duration, SystemTime};
 
-use ipstack::{IpStack, IpStackConfig, IpStackStream, IpStackTcpStream, IpStackUdpStream};
+use ipstack::{IpStack, IpStackConfig, IpStackStream, IpStackTcpStream, TcpConfig};
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::sync::OnceCell;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{mpsc, OnceCell};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::config::AuraConfig;
 use crate::naive::{start_naive, ManagedProcess};
-use crate::proxy::{encode_uot_frame, read_uot_frame, MultiProxy};
+use crate::proxy::MultiProxy;
 use crate::routes::{configure_routes, pin_server_ipv4, tun_device_name, RouteState};
+use crate::udp::{PacketSink, UdpMux, UDP_IDLE_TIMEOUT};
 
-/// Idle UDP flows (QUIC, DNS) each hold a task and a UoT stream.
-const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Idle TCP connections are only reset after this long. SSH sessions, push
+/// and mail connections can sit silent for many minutes between keepalives.
+const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+/// Bytes the userspace stack may have in flight toward the app, and its
+/// per-connection read buffer. ipstack's 16 KiB defaults cap throughput.
+const TCP_WINDOW: usize = 256 * 1024;
+/// Copy buffer per direction between the stack and the proxy connection.
+const COPY_BUFFER: usize = 64 * 1024;
 
 #[derive(Debug, Default, Serialize)]
 pub struct RuntimeStats {
@@ -41,9 +48,9 @@ pub struct RuntimeStats {
 }
 
 #[derive(Default)]
-struct Counters {
-    upload: AtomicU64,
-    download: AtomicU64,
+pub struct Counters {
+    pub upload: AtomicU64,
+    pub download: AtomicU64,
 }
 
 impl Counters {
@@ -100,17 +107,18 @@ impl VpnRuntime {
         let mtu = cfg.tun.mtu as u16;
         let device = open_tun(mtu).await.map_err(|e| format!("open TUN: {e}"))?;
         let device_name = device.name().map_err(|e| format!("open TUN: {e}"))?;
-        let mut stack_config = IpStackConfig::default();
-        stack_config
-            .mtu_unchecked(mtu)
-            .udp_timeout(UDP_IDLE_TIMEOUT);
-        let stack = IpStack::new(stack_config, TunIo(device));
+        let device = Arc::new(device);
+        let stack = IpStack::new(stack_config(mtu), TunIo(device.clone()));
+        let (sink, packets) = mpsc::unbounded_channel();
+        let inject = tokio::spawn(inject_packets(device, packets));
         let serve = tokio::spawn(serve_stack(
             stack,
             self.proxy.clone(),
             self.counters.clone(),
+            sink,
+            mtu.into(),
         ));
-        self.tasks.lock().unwrap().push(serve);
+        self.tasks.lock().unwrap().extend([serve, inject]);
 
         let route_cfg = cfg.clone();
         let routes =
@@ -264,9 +272,31 @@ async fn open_tun(mtu: u16) -> io::Result<AsyncDevice> {
     }
 }
 
+fn stack_config(mtu: u16) -> IpStackConfig {
+    let mut tcp = TcpConfig::default();
+    tcp.timeout = TCP_IDLE_TIMEOUT;
+    tcp.max_unacked_bytes = TCP_WINDOW as u32;
+    tcp.read_buffer_size = TCP_WINDOW;
+    let mut config = IpStackConfig::default();
+    config
+        .mtu_unchecked(mtu)
+        .udp_timeout(UDP_IDLE_TIMEOUT)
+        .with_tcp_config(tcp);
+    config
+}
+
+/// Writes packets built outside the userspace stack (UDP replies) to the TUN.
+async fn inject_packets(device: Arc<AsyncDevice>, mut packets: mpsc::UnboundedReceiver<Vec<u8>>) {
+    while let Some(packet) = packets.recv().await {
+        if let Err(e) = device.send(&packet).await {
+            log::debug!("TUN write: {e}");
+        }
+    }
+}
+
 /// Adapts tun-rs's packet API to the AsyncRead/AsyncWrite device ipstack
 /// expects: one read or write is exactly one IP packet.
-struct TunIo(AsyncDevice);
+struct TunIo(Arc<AsyncDevice>);
 
 impl AsyncRead for TunIo {
     fn poll_read(
@@ -300,7 +330,14 @@ impl AsyncWrite for TunIo {
 
 /// Accepts flows from the userspace stack. Flow tasks live in a JoinSet so
 /// aborting this task tears every one of them down with it.
-async fn serve_stack(mut stack: IpStack, proxy: Arc<MultiProxy>, counters: Arc<Counters>) {
+async fn serve_stack(
+    mut stack: IpStack,
+    proxy: Arc<MultiProxy>,
+    counters: Arc<Counters>,
+    sink: PacketSink,
+    mtu: usize,
+) {
+    let udp = UdpMux::new(proxy.clone(), counters.clone(), sink, mtu);
     let mut flows = JoinSet::new();
     loop {
         tokio::select! {
@@ -308,8 +345,8 @@ async fn serve_stack(mut stack: IpStack, proxy: Arc<MultiProxy>, counters: Arc<C
                 Ok(IpStackStream::Tcp(tcp)) => {
                     flows.spawn(tcp_flow(tcp, proxy.clone(), counters.clone()));
                 }
-                Ok(IpStackStream::Udp(udp)) => {
-                    flows.spawn(udp_flow(udp, proxy.clone(), counters.clone()));
+                Ok(IpStackStream::Udp(flow)) => {
+                    flows.spawn(udp.clone().serve_flow(flow));
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -341,49 +378,9 @@ async fn tcp_flow(tcp: IpStackTcpStream, proxy: Arc<MultiProxy>, counters: Arc<C
         counters,
         upload: false,
     };
-    let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
-}
-
-async fn udp_flow(udp: IpStackUdpStream, proxy: Arc<MultiProxy>, counters: Arc<Counters>) {
-    let destination = udp.peer_addr();
-    let remote = match proxy.dial_udp(destination).await {
-        Ok(remote) => remote,
-        Err(e) => {
-            log::debug!("UDP {destination}: {e}");
-            return;
-        }
-    };
-    let (mut remote_read, mut remote_write) = remote.into_split();
-    let (mut local_read, mut local_write) = tokio::io::split(udp);
-    let up = async {
-        let mut buf = vec![0u8; 65535];
-        let mut frame = Vec::with_capacity(buf.len() + 2);
-        loop {
-            let n = local_read.read(&mut buf).await?;
-            if n == 0 {
-                return Ok::<_, io::Error>(());
-            }
-            counters.upload.fetch_add(n as u64, Ordering::Relaxed);
-            encode_uot_frame(&buf[..n], &mut frame)?;
-            remote_write.write_all(&frame).await?;
-        }
-    };
-    let down = async {
-        let mut buf = vec![0u8; 65535];
-        loop {
-            let n = read_uot_frame(&mut remote_read, &mut buf).await?;
-            counters.download.fetch_add(n as u64, Ordering::Relaxed);
-            // One write is one datagram; write_all would split an oversized
-            // one into several.
-            let _ = local_write.write(&buf[..n]).await?;
-        }
-        #[allow(unreachable_code)]
-        Ok::<_, io::Error>(())
-    };
-    tokio::select! {
-        _ = up => {}
-        _ = down => {}
-    }
+    let _ =
+        tokio::io::copy_bidirectional_with_sizes(&mut local, &mut remote, COPY_BUFFER, COPY_BUFFER)
+            .await;
 }
 
 /// Counts bytes read through a stream: reads from the TUN side are uploads,
@@ -434,10 +431,12 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Counted<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::{ProxyEndpoint, SocksAddr, UOT_MAGIC_ADDRESS};
+    use crate::proxy::{
+        encode_uot_packet, read_uot_packet, ProxyEndpoint, SocksAddr, UOT_MAGIC_ADDRESS,
+    };
     use etherparse::{PacketBuilder, SlicedPacket, TransportSlice};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use tokio::sync::mpsc;
 
     /// An in-memory TUN: packets in through one channel, out through another.
     struct ChannelDevice {
@@ -475,8 +474,39 @@ mod tests {
         }
     }
 
+    fn udp_packet(from: ([u8; 4], u16), to: ([u8; 4], u16), payload: &[u8]) -> Vec<u8> {
+        let mut packet = Vec::new();
+        PacketBuilder::ipv4(from.0, to.0, 64)
+            .udp(from.1, to.1)
+            .write(&mut packet, payload)
+            .unwrap();
+        packet
+    }
+
+    async fn next_udp(
+        rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> (SocketAddr, SocketAddr, Vec<u8>) {
+        let packet = timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let sliced = SlicedPacket::from_ip(&packet).unwrap();
+        let Some(etherparse::NetSlice::Ipv4(ip)) = sliced.net else {
+            panic!("not IPv4")
+        };
+        let Some(TransportSlice::Udp(udp)) = sliced.transport else {
+            panic!("not UDP")
+        };
+        let h = ip.header();
+        (
+            SocketAddr::from((h.source(), udp.source_port())),
+            SocketAddr::from((h.destination(), udp.destination_port())),
+            udp.payload().to_vec(),
+        )
+    }
+
     #[tokio::test]
-    async fn udp_packet_round_trips_through_uot() {
+    async fn udp_socket_shares_one_uot_stream_across_peers() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let server = tokio::spawn(async move {
@@ -491,59 +521,139 @@ mod tests {
                 SocksAddr::Domain(UOT_MAGIC_ADDRESS.into(), 0)
             );
             conn.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
-            assert_eq!(conn.read_u8().await?, 1);
-            assert_eq!(
-                SocksAddr::read(&mut conn).await?,
-                SocksAddr::Ip("8.8.8.8:53".parse().unwrap())
-            );
+            assert_eq!(conn.read_u8().await?, 0, "non-connected mode");
+            SocksAddr::read(&mut conn).await?;
             let mut buf = [0u8; 64];
-            let n = read_uot_frame(&mut conn, &mut buf).await?;
-            assert_eq!(&buf[..n], b"ping");
             let mut frame = Vec::new();
-            encode_uot_frame(b"pong!", &mut frame)?;
+            // DNS query and its answer.
+            let (peer, n) = read_uot_packet(&mut conn, &mut buf).await?;
+            assert_eq!(
+                (peer, &buf[..n]),
+                (Some("8.8.8.8:53".parse().unwrap()), &b"ping"[..])
+            );
+            encode_uot_packet(peer.unwrap(), b"pong!", &mut frame)?;
             conn.write_all(&frame).await?;
-            // Hold the stream open until the client is done with it.
+            // A second peer on the same socket arrives on the same stream...
+            let (peer, n) = read_uot_packet(&mut conn, &mut buf).await?;
+            assert_eq!(
+                (peer, &buf[..n]),
+                (Some("9.9.9.9:3478".parse().unwrap()), &b"stun"[..])
+            );
+            // ...and a peer the app never sent to can still reach it.
+            encode_uot_packet("1.2.3.4:5000".parse().unwrap(), b"hello", &mut frame)?;
+            conn.write_all(&frame).await?;
+            let second = timeout(Duration::from_millis(300), listener.accept()).await;
+            assert!(second.is_err(), "one local socket must use one UoT stream");
             let _ = conn.read_u8().await;
             Ok::<_, io::Error>(())
         });
 
         let (to_stack, inbound) = mpsc::unbounded_channel();
         let (outbound, mut from_stack) = mpsc::unbounded_channel();
-        let mut config = IpStackConfig::default();
-        config
-            .mtu_unchecked(1400)
-            .udp_timeout(Duration::from_secs(5));
-        let stack = IpStack::new(config, ChannelDevice { inbound, outbound });
+        let stack = IpStack::new(
+            stack_config(1400),
+            ChannelDevice {
+                inbound,
+                outbound: outbound.clone(),
+            },
+        );
         let proxy = Arc::new(MultiProxy::new(vec![ProxyEndpoint {
             tag: "t".into(),
             addr,
         }]));
         let counters = Arc::new(Counters::default());
-        let serve = tokio::spawn(serve_stack(stack, proxy, counters.clone()));
+        let serve = tokio::spawn(serve_stack(stack, proxy, counters.clone(), outbound, 1400));
 
-        let mut packet = Vec::new();
-        PacketBuilder::ipv4([10, 0, 0, 2], [8, 8, 8, 8], 64)
-            .udp(5000, 53)
-            .write(&mut packet, b"ping")
+        let app: SocketAddr = "10.0.0.2:5000".parse().unwrap();
+        to_stack
+            .send(udp_packet(
+                ([10, 0, 0, 2], 5000),
+                ([8, 8, 8, 8], 53),
+                b"ping",
+            ))
             .unwrap();
-        to_stack.send(packet).unwrap();
-
-        let reply = timeout(Duration::from_secs(3), from_stack.recv())
-            .await
-            .unwrap()
+        assert_eq!(
+            next_udp(&mut from_stack).await,
+            ("8.8.8.8:53".parse().unwrap(), app, b"pong!".to_vec())
+        );
+        to_stack
+            .send(udp_packet(
+                ([10, 0, 0, 2], 5000),
+                ([9, 9, 9, 9], 3478),
+                b"stun",
+            ))
             .unwrap();
-        let sliced = SlicedPacket::from_ip(&reply).unwrap();
-        let Some(TransportSlice::Udp(udp)) = sliced.transport else {
-            panic!("expected a UDP reply")
-        };
-        assert_eq!((udp.source_port(), udp.destination_port()), (53, 5000));
-        assert_eq!(udp.payload(), b"pong!");
-        assert_eq!(counters.upload.load(Ordering::Relaxed), 4);
-        assert_eq!(counters.download.load(Ordering::Relaxed), 5);
+        assert_eq!(
+            next_udp(&mut from_stack).await,
+            ("1.2.3.4:5000".parse().unwrap(), app, b"hello".to_vec())
+        );
+        assert_eq!(counters.upload.load(Ordering::Relaxed), 8);
+        assert_eq!(counters.download.load(Ordering::Relaxed), 10);
 
         serve.abort();
         let _ = serve.await;
         server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn udp_session_reopens_after_the_stream_drops() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let mut payloads = Vec::new();
+            for _ in 0..2 {
+                let (mut conn, _) = listener.accept().await?;
+                let mut head = [0u8; 3];
+                conn.read_exact(&mut head).await?;
+                conn.write_all(&[5, 0]).await?;
+                conn.read_exact(&mut head).await?;
+                SocksAddr::read(&mut conn).await?;
+                conn.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+                conn.read_u8().await?;
+                SocksAddr::read(&mut conn).await?;
+                let mut buf = [0u8; 16];
+                let (_, n) = read_uot_packet(&mut conn, &mut buf).await?;
+                payloads.push(buf[..n].to_vec());
+                // Dropping `conn` closes the stream, as a server restart would.
+            }
+            Ok::<_, io::Error>(payloads)
+        });
+
+        let proxy = Arc::new(MultiProxy::new(vec![ProxyEndpoint {
+            tag: "t".into(),
+            addr,
+        }]));
+        let (sink, _packets) = mpsc::unbounded_channel();
+        let mux = UdpMux::new(proxy, Arc::new(Counters::default()), sink, 1400);
+        let (app, peer) = (
+            "10.0.0.2:5000".parse().unwrap(),
+            "8.8.8.8:53".parse().unwrap(),
+        );
+        mux.send(app, peer, b"one").await.unwrap();
+        // Wait for the reader to notice the closed stream and retire it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while mux.session_count() > 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "session was not retired"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        mux.send(app, peer, b"two").await.unwrap();
+        let payloads = timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(payloads, vec![b"one".to_vec(), b"two".to_vec()]);
+    }
+
+    #[test]
+    fn tcp_tuning_replaces_ipstack_defaults() {
+        let config = stack_config(1400);
+        assert_eq!(config.tcp_config.timeout, TCP_IDLE_TIMEOUT);
+        assert_eq!(config.tcp_config.max_unacked_bytes as usize, TCP_WINDOW);
+        assert_eq!(config.udp_timeout, UDP_IDLE_TIMEOUT);
     }
 
     #[tokio::test]
@@ -572,15 +682,19 @@ mod tests {
 
         let (to_stack, inbound) = mpsc::unbounded_channel();
         let (outbound, mut from_stack) = mpsc::unbounded_channel();
-        let mut config = IpStackConfig::default();
-        config.mtu_unchecked(1400);
-        let stack = IpStack::new(config, ChannelDevice { inbound, outbound });
+        let stack = IpStack::new(
+            stack_config(1400),
+            ChannelDevice {
+                inbound,
+                outbound: outbound.clone(),
+            },
+        );
         let proxy = Arc::new(MultiProxy::new(vec![ProxyEndpoint {
             tag: "t".into(),
             addr,
         }]));
         let counters = Arc::new(Counters::default());
-        let serve = tokio::spawn(serve_stack(stack, proxy, counters.clone()));
+        let serve = tokio::spawn(serve_stack(stack, proxy, counters.clone(), outbound, 1400));
 
         let client = |seq: u32| {
             PacketBuilder::ipv4([10, 0, 0, 2], [1, 2, 3, 4], 64).tcp(40000, 80, seq, 65535)

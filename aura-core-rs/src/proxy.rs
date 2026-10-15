@@ -152,12 +152,13 @@ impl MultiProxy {
         Err(all_failed("all NaiveProxy transports failed", last_err))
     }
 
-    /// Opens a UoT v2 stream in connected mode: SOCKS CONNECT to the magic
-    /// address, then one mode byte and the real destination.
-    pub async fn dial_udp(&self, destination: SocketAddr) -> io::Result<TcpStream> {
+    /// Opens a UoT v2 stream in non-connected mode: SOCKS CONNECT to the
+    /// magic address, then the request (mode byte 0 and a SOCKS address, which
+    /// the server ignores in this mode). Every packet then names its own peer.
+    pub async fn dial_uot(&self, first: SocketAddr) -> io::Result<TcpStream> {
         let magic = SocksAddr::Domain(UOT_MAGIC_ADDRESS.into(), 0);
-        let mut header = vec![1];
-        SocksAddr::Ip(destination).encode(&mut header);
+        let mut header = vec![0];
+        SocksAddr::Ip(first).encode(&mut header);
         let mut last_err = None;
         for index in self.order() {
             let attempt = async {
@@ -285,31 +286,64 @@ async fn tls_probe(endpoint: &str) -> io::Result<()> {
         .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
 }
 
-/// Reads one UoT v2 frame (big-endian u16 length + payload) into `buf`.
-pub async fn read_uot_frame<R: AsyncReadExt + Unpin>(
-    r: &mut R,
-    buf: &mut [u8],
-) -> io::Result<usize> {
-    let length = r.read_u16().await? as usize;
-    if length > buf.len() {
-        let mut skip = (&mut *r).take(length as u64);
-        tokio::io::copy(&mut skip, &mut tokio::io::sink()).await?;
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "UoT datagram exceeds the buffer",
-        ));
-    }
-    r.read_exact(&mut buf[..length]).await?;
-    Ok(length)
-}
+// UoT v2 packet addresses use sing's own family bytes, not SOCKS ones.
+const UOT_IPV4: u8 = 0x00;
+const UOT_IPV6: u8 = 0x01;
+const UOT_FQDN: u8 = 0x02;
 
-pub fn encode_uot_frame(payload: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
+/// Encodes one non-connected UoT v2 packet: peer address, port, big-endian
+/// u16 length, payload.
+pub fn encode_uot_packet(peer: SocketAddr, payload: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
     let length =
         u16::try_from(payload.len()).map_err(|_| invalid("UoT datagram exceeds 65535 bytes"))?;
     out.clear();
+    match peer.ip() {
+        IpAddr::V4(ip) => {
+            out.push(UOT_IPV4);
+            out.extend_from_slice(&ip.octets());
+        }
+        IpAddr::V6(ip) => {
+            out.push(UOT_IPV6);
+            out.extend_from_slice(&ip.octets());
+        }
+    }
+    out.extend_from_slice(&peer.port().to_be_bytes());
     out.extend_from_slice(&length.to_be_bytes());
     out.extend_from_slice(payload);
     Ok(())
+}
+
+/// Reads one non-connected UoT v2 packet into `buf`. The peer is None for a
+/// domain-addressed packet, which is consumed and skipped.
+pub async fn read_uot_packet<R: AsyncReadExt + Unpin>(
+    r: &mut R,
+    buf: &mut [u8],
+) -> io::Result<(Option<SocketAddr>, usize)> {
+    let ip = match r.read_u8().await? {
+        UOT_IPV4 => {
+            let mut ip = [0u8; 4];
+            r.read_exact(&mut ip).await?;
+            Some(IpAddr::from(ip))
+        }
+        UOT_IPV6 => {
+            let mut ip = [0u8; 16];
+            r.read_exact(&mut ip).await?;
+            Some(IpAddr::from(ip))
+        }
+        UOT_FQDN => {
+            let mut name = vec![0u8; r.read_u8().await? as usize];
+            r.read_exact(&mut name).await?;
+            None
+        }
+        _ => return Err(invalid("invalid UoT address family")),
+    };
+    let port = r.read_u16().await?;
+    let length = r.read_u16().await? as usize;
+    if length > buf.len() {
+        return Err(invalid("UoT datagram exceeds the buffer"));
+    }
+    r.read_exact(&mut buf[..length]).await?;
+    Ok((ip.map(|ip| SocketAddr::new(ip, port)), length))
 }
 
 #[cfg(test)]
@@ -318,7 +352,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[tokio::test]
-    async fn quic_datagram_through_uot_v2() {
+    async fn quic_datagrams_through_non_connected_uot_v2() {
         // Chromium QUIC initial packets are close to the path MTU. Keep this
         // payload large enough to catch Naive padding/framing corruption.
         let expected = vec![0x42u8; 1350];
@@ -336,15 +370,18 @@ mod tests {
             assert_eq!(request, [5, 1, 0]);
             assert_eq!(address, SocksAddr::Domain(UOT_MAGIC_ADDRESS.into(), 0));
             conn.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).await?;
-            assert_eq!(conn.read_u8().await?, 1, "UoT must use connected mode");
-            let destination = SocksAddr::read(&mut conn).await?;
-            assert_eq!(destination, SocksAddr::Ip("8.8.8.8:443".parse().unwrap()));
+            assert_eq!(conn.read_u8().await?, 0, "UoT must use non-connected mode");
+            SocksAddr::read(&mut conn).await?;
+            // Two peers on one stream; each packet carries its own address.
             let mut buf = vec![0u8; 65535];
-            let n = read_uot_frame(&mut conn, &mut buf).await?;
-            assert_eq!(&buf[..n], &server_payload[..]);
-            let mut frame = Vec::new();
-            encode_uot_frame(&buf[..n], &mut frame)?;
-            conn.write_all(&frame).await?;
+            for peer in ["8.8.8.8:443", "[2001:db8::1]:3478"] {
+                let (from, n) = read_uot_packet(&mut conn, &mut buf).await?;
+                assert_eq!(from, Some(peer.parse().unwrap()));
+                assert_eq!(&buf[..n], &server_payload[..]);
+                let mut frame = Vec::new();
+                encode_uot_packet(from.unwrap(), &buf[..n], &mut frame)?;
+                conn.write_all(&frame).await?;
+            }
             Ok::<_, io::Error>(())
         });
 
@@ -353,20 +390,34 @@ mod tests {
             addr,
         }]);
         let mut conn = proxy
-            .dial_udp("8.8.8.8:443".parse().unwrap())
+            .dial_uot("8.8.8.8:443".parse().unwrap())
             .await
             .unwrap();
-        let mut frame = Vec::new();
-        encode_uot_frame(&expected, &mut frame).unwrap();
-        conn.write_all(&frame).await.unwrap();
-        let mut buf = vec![0u8; expected.len()];
-        let n = timeout(Duration::from_secs(2), read_uot_frame(&mut conn, &mut buf))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(&buf[..n], &expected[..]);
+        let mut buf = vec![0u8; 65535];
+        for peer in ["8.8.8.8:443", "[2001:db8::1]:3478"] {
+            let peer: SocketAddr = peer.parse().unwrap();
+            let mut frame = Vec::new();
+            encode_uot_packet(peer, &expected, &mut frame).unwrap();
+            conn.write_all(&frame).await.unwrap();
+            let (from, n) = timeout(Duration::from_secs(2), read_uot_packet(&mut conn, &mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(from, Some(peer));
+            assert_eq!(&buf[..n], &expected[..]);
+        }
         server.await.unwrap().unwrap();
         assert_eq!(proxy.snapshot().0, "test");
+    }
+
+    #[tokio::test]
+    async fn skips_domain_addressed_packets() {
+        let mut wire: &[u8] = &[UOT_FQDN, 3, b'a', b'.', b'b', 0, 53, 0, 2, 9, 9];
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            read_uot_packet(&mut wire, &mut buf).await.unwrap(),
+            (None, 2)
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "aura"
-version = "26.3.0"
+version = "26.3.1"
 description = "Aura — DPI-resistant VPN desktop app (Tauri React + Rust port)"
 authors = ["you"]
 edition = "2021"

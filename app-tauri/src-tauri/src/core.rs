@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use crate::models::{AuthErrorKind, ServerInfo};
 
-pub const CORE_VERSION: &str = "26.3.0";
+pub const CORE_VERSION: &str = "26.3.1";
 const CORE_BASE: &str = "http://127.0.0.1:45873";
 const PORT: u16 = 443;
 

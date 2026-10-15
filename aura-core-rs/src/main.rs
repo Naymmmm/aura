@@ -8,6 +8,7 @@ mod process;
 mod proxy;
 mod routes;
 mod tailscale;
+mod udp;
 mod vpn;
 
 use std::net::SocketAddr;
