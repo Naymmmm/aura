@@ -552,9 +552,15 @@ fn install_linux(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), Str
     }
 }
 
-/// PowerShell single-quoted literal; ' is escaped as ''.
+/// PowerShell single-quoted literal; ' is escaped as ''. Windows PowerShell
+/// 5.1 can't open `\\?\` verbatim paths, so they are written in plain form.
 fn ps_quote(p: &Path) -> String {
-    format!("'{}'", p.display().to_string().replace('\'', "''"))
+    let text = p.display().to_string();
+    let text = match text.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => text.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(text),
+    };
+    format!("'{}'", text.replace('\'', "''"))
 }
 
 /// The elevated install script. It writes "ok" or the failure detail to
@@ -572,19 +578,30 @@ Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $install, $runtime | Out-Null
 & icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-# Stop the old helper and its NaiveProxy child: naive.exe outlives a killed
-# aura-core.exe and keeps its file locked. Match by path so unrelated
-# processes with the same name are left alone.
-function Get-HelperProcesses {{
-  Get-CimInstance Win32_Process -Filter "Name='aura-core.exe' OR Name='naive.exe'" -ErrorAction SilentlyContinue |
-    Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith($install + '\', [StringComparison]::OrdinalIgnoreCase) }}
+# The old helper: anything running from the install folder (aura-core.exe and
+# its NaiveProxy child) plus whatever owns the API port, wherever it lives.
+function Get-HelperProcessIds {{
+  $ids = @(Get-CimInstance Win32_Process -Filter "Name='aura-core.exe' OR Name='naive.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith($install + '\', [StringComparison]::OrdinalIgnoreCase) }} |
+    ForEach-Object {{ [int]$_.ProcessId }})
+  $ids += @(Get-NetTCPConnection -LocalPort 45873 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ [int]$_.OwningProcess }})
+  $ids | Where-Object {{ $_ -gt 4 }} | Sort-Object -Unique
 }}
-Get-HelperProcesses | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
-# Stop-Process returns before Windows releases the files; wait for exit.
-$deadline = (Get-Date).AddSeconds(20)
-while ((Get-HelperProcesses) -and (Get-Date) -lt $deadline) {{
-  Start-Sleep -Milliseconds 300
+function Stop-Helper {{
+  Get-HelperProcessIds | ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}
+  # Stop-Process returns before Windows releases the files; wait for exit, and
+  # escalate to taskkill (which also takes child processes) if it lingers.
+  $deadline = (Get-Date).AddSeconds(20)
+  $escalated = $false
+  while ((Get-HelperProcessIds) -and (Get-Date) -lt $deadline) {{
+    if (-not $escalated -and (Get-Date) -gt $deadline.AddSeconds(-12)) {{
+      Get-HelperProcessIds | ForEach-Object {{ & taskkill.exe /F /T /PID $_ 2>&1 | Out-Null }}
+      $escalated = $true
+    }}
+    Start-Sleep -Milliseconds 300
+  }}
 }}
+Stop-Helper
 # Copy one file into place. A file Windows still holds open can't be
 # overwritten but can be renamed, so move it aside and copy fresh.
 function Install-HelperFile($source, $name) {{
@@ -616,23 +633,30 @@ $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccou
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
+# A helper still holding the API port would answer instead of the new one.
+$holder = Get-NetTCPConnection -LocalPort 45873 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($holder) {{
+  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($holder.OwningProcess)" -ErrorAction SilentlyContinue
+  throw "port 45873 is still held by $($proc.Name) (PID $($holder.OwningProcess), $($proc.ExecutablePath)); end it in Task Manager and retry"
+}}
 Start-ScheduledTask -TaskName $taskName
-# Only report success once the helper is actually listening.
+# Only report success once the new helper answers with this install's token.
+$token = (Get-Content -Raw -LiteralPath {token}).Trim()
 $online = $false
+$status = ''
 for ($i = 0; $i -lt 40 -and -not $online; $i++) {{
   try {{
-    $client = New-Object System.Net.Sockets.TcpClient
-    $client.Connect('127.0.0.1', 45873)
-    $client.Close()
-    $online = $true
+    $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri 'http://127.0.0.1:45873/v1/status' -Headers @{{ Authorization = "Bearer $token" }}
+    $online = $response.StatusCode -eq 200
   }} catch {{
+    $status = $_.Exception.Message
     Start-Sleep -Milliseconds 250
   }}
 }}
 if (-not $online) {{
   $helperLog = Join-Path $runtime 'helper.log'
   $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-  $detail = "aura-core did not start (task result $($taskInfo.LastTaskResult))."
+  $detail = "aura-core did not start (task result $($taskInfo.LastTaskResult); last check: $status)."
   if (Test-Path -LiteralPath $helperLog) {{ $detail += "`n" + (Get-Content -Raw -LiteralPath $helperLog) }}
   Set-Content -LiteralPath $resultFile -Value $detail
   exit 1
@@ -716,6 +740,13 @@ pub fn uninstall(app_data_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ps_quote_strips_verbatim_prefixes() {
+        assert_eq!(ps_quote(Path::new(r"\\?\C:\Program Files\Aura")), r"'C:\Program Files\Aura'");
+        assert_eq!(ps_quote(Path::new(r"\\?\UNC\srv\share\a")), r"'\\srv\share\a'");
+        assert_eq!(ps_quote(Path::new(r"C:\Users\O'Brien")), r"'C:\Users\O''Brien'");
+    }
 
     /// Writes the Windows install scripts for an awkward user path. Set
     /// AURA_PWSH to a PowerShell binary to also parse-check them.
