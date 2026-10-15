@@ -1,4 +1,11 @@
-export type ArtifactType = 'windows' | 'windows-arm64' | 'macos' | 'linux' | 'source';
+export type ArtifactType =
+  | 'windows'
+  | 'windows-arm64'
+  | 'windows-setup'
+  | 'windows-arm64-setup'
+  | 'macos'
+  | 'linux'
+  | 'source';
 
 export interface ArchiveArtifact {
   key: string;

@@ -8,23 +8,17 @@
 // GET  /v1/release/meta?key=     → {version, sha256, size} for the auto-updater
 // GET  /admin                    → admin panel HTML
 // /v1/admin/...                  → admin API (login/logout/me/accounts/release)
-// GET  /archive                → Discord-gated version archive (Stable / Dev)
-// GET  /dl/{key}                 → Discord-gated release download
+// GET  /archive                → public version archive (Stable / Dev)
+// GET  /dl/{key}                 → public release download
 
 import { json, HDRS, safeEqual } from './util';
-import { authenticateLegacyCredentials, handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
+import { handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
 import { serveDownload, serveArchiveAPI, serveReleaseMeta } from './releases';
 import { handleCiRelease, handleCiReleaseAnnouncement } from './releases';
-import {
-  handleDiscordCallback,
-  handleDiscordLogin,
-  downloadSessionDiscordId,
-  loginRedirect,
-} from './discord_auth';
-import { authenticateAppToken, finishAppDiscordLogin, handleAppDiscordHandoff, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
+import { handleDiscordCallback, handleDiscordLogin } from './discord_auth';
+import { finishAppDiscordLogin, handleAppDiscordHandoff, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
 import { handleDiscordInteraction, reconcileExpiredAccountRoles } from './discord_bot';
-import { getDiscordAccount } from './accounts_v2';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -83,15 +77,12 @@ export default {
       // Legacy name / site root
       return Response.redirect(`${url.origin}/archive`, 308);
     }
+    // Downloads are public: no Discord login or membership needed.
     if (url.pathname === '/archive') {
-      const access = await downloadAccess(req, env);
-      if (!access.authenticated) return loginRedirect('/archive');
       return env.ASSETS.fetch(new URL('/index.html', req.url));
     }
     if (url.pathname === '/v1/archive') {
-      const access = await downloadAccess(req, env);
-      if (!access.authenticated) return json({ error: 'unauthorized' }, 401);
-      return serveArchiveAPI(env, access.entitled, access.canDownloadSource);
+      return serveArchiveAPI(env, true, true);
     }
 
     const sessMatch = url.pathname.match(/^\/v1\/session(?:\/([^/]+)(?:\/([^/]+))?)?$/);
@@ -104,12 +95,7 @@ export default {
     }
 
     if (url.pathname.startsWith('/dl/')) {
-      const access = await downloadAccess(req, env);
-      if (!access.authenticated) return loginRedirect(url.pathname);
-      if (!access.entitled) return json({ error: 'not_entitled' }, 403);
-      const key = url.pathname.slice(4);
-      if (isSourceKey(key) && !access.canDownloadSource) return json({ error: 'standard_required' }, 403);
-      return serveDownload(req, env, key);
+      return serveDownload(req, env, url.pathname.slice(4));
     }
 
     // /v1/admin/{resource}[/{id}[/{action}]] — resource: login|logout|me|accounts|release
@@ -123,37 +109,6 @@ export default {
     ctx.waitUntil(reconcileExpiredAccountRoles(env));
   },
 } satisfies ExportedHandler<Env>;
-
-async function downloadAccess(req: Request, env: Env): Promise<{ authenticated: boolean; entitled: boolean; canDownloadSource: boolean }> {
-  const appAccount = await authenticateAppToken(req, env);
-  if (appAccount) return { authenticated: true, entitled: true, canDownloadSource: isStandard(appAccount.account.plan) };
-  const legacyId = req.headers.get('x-aura-account-id') ?? '';
-  const authorization = req.headers.get('authorization') ?? '';
-  const legacyToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-  const legacy = legacyId ? await authenticateLegacyCredentials(env, legacyId, legacyToken) : null;
-  if (
-    legacy &&
-    !legacy.disabled &&
-    legacy.expires_at > Math.floor(Date.now() / 1000)
-  ) {
-    return { authenticated: true, entitled: true, canDownloadSource: true };
-  }
-  // Entitlement is resolved from the Discord-linked account record (plan + how
-  // long it lasts), never from a guild role.
-  const discordId = await downloadSessionDiscordId(req, env);
-  if (!discordId) return { authenticated: false, entitled: false, canDownloadSource: false };
-  const account = await getDiscordAccount(env, discordId);
-  const entitled = !!account && !account.disabled && account.expires_at > Math.floor(Date.now() / 1000);
-  return {
-    authenticated: true,
-    entitled,
-    canDownloadSource: entitled && !!account && isStandard(account.plan),
-  };
-}
-
-function isStandard(plan: string): boolean { return plan === 'standard' || plan === 'paid'; }
-
-function isSourceKey(key: string): boolean { return key === 'source' || /\/source\.zip$/.test(key); }
 
 // Legacy shared-secret config path — byte-identical behavior, keep forever
 // (old app builds depend on it; static creds remain the emergency fallback).

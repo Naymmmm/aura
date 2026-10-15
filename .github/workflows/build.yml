@@ -82,9 +82,9 @@ jobs:
         working-directory: app-tauri
         run: npm ci
 
-      - name: Build Tauri app (portable, no installer)
+      - name: Build Tauri app (NSIS installer + portable exe)
         working-directory: app-tauri
-        run: npx tauri build --no-bundle --target ${{ matrix.rust_target }}
+        run: npx tauri build --bundles nsis --target ${{ matrix.rust_target }}
 
       - name: Zip the portable Windows app
         shell: pwsh
@@ -97,11 +97,16 @@ jobs:
           if (Test-Path "$rel\resources") { Copy-Item "$rel\resources" "$stage\resources" -Recurse -Force }
           if (-not (Test-Path "$stage\resources\aura-core\aura-core.exe")) { throw 'aura-core is missing from the Windows bundle' }
           Compress-Archive -Path "$stage\*" -DestinationPath aura-windows-${{ matrix.arch }}.zip -Force
+          $setup = Get-ChildItem "$rel\bundle\nsis\*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw 'NSIS installer was not built' }
+          Copy-Item $setup.FullName aura-windows-${{ matrix.arch }}-setup.exe -Force
 
       - uses: actions/upload-artifact@v4
         with:
           name: aura-windows-${{ matrix.arch }}
-          path: aura-windows-${{ matrix.arch }}.zip
+          path: |
+            aura-windows-${{ matrix.arch }}.zip
+            aura-windows-${{ matrix.arch }}-setup.exe
 
   macos:
     runs-on: macos-latest
@@ -260,7 +265,10 @@ jobs:
             local sha256 content_type
             sha256="$(sha256sum "$2" | awk '{print $1}')"
             content_type=application/zip
-            case "$2" in *.dmg) content_type=application/x-apple-diskimage ;; esac
+            case "$2" in
+              *.dmg) content_type=application/x-apple-diskimage ;;
+              *.exe) content_type=application/vnd.microsoft.portable-executable ;;
+            esac
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
               -F "version=${VERSION}" \
@@ -272,6 +280,8 @@ jobs:
           }
           publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
           publish windows-arm64 dist/aura-windows-arm64/aura-windows-arm64.zip
+          publish windows-setup dist/aura-windows-amd64/aura-windows-amd64-setup.exe
+          publish windows-arm64-setup dist/aura-windows-arm64/aura-windows-arm64-setup.exe
           publish macos dist/aura-macos-universal/aura-macos-universal.dmg
           publish linux dist/aura-linux-x64/aura-linux-x64.zip
           publish source aura-source.zip
@@ -299,4 +309,5 @@ jobs:
             dist/**/*.zip
             dist/**/*.dmg
             dist/**/*.deb
+            dist/**/*.exe
             aura-source.zip

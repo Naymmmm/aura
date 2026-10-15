@@ -9,7 +9,7 @@ function request(path: string, init?: RequestInit): Request {
 
 async function publishArtifact(
   version: string,
-  artifact: 'windows' | 'windows-arm64' | 'macos' | 'linux' | 'source',
+  artifact: 'windows' | 'windows-arm64' | 'windows-setup' | 'macos' | 'linux' | 'source',
   body: string
 ) {
   const form = new FormData();
@@ -63,14 +63,13 @@ async function downloadSessionCookie(plan: 'free_trial' | 'standard' | 'none' = 
   return `aura_download=${match[1]}`;
 }
 
-describe('Discord-gated downloads', () => {
+describe('public downloads', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('redirects the version archive to Discord authentication', async () => {
+  it('serves the version archive page without a Discord login', async () => {
     const response = await worker.fetch(request('/archive'), env);
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/auth/discord/login?return_to=%2Farchive');
+    expect(response.status).toBe(200);
   });
 
   it('redirects the legacy /downloads path to the version archive', async () => {
@@ -80,11 +79,13 @@ describe('Discord-gated downloads', () => {
     expect(response.headers.get('location')).toBe('https://api.copal.run/archive');
   });
 
-  it('redirects direct artifact downloads while preserving the requested path', async () => {
+  it('serves latest downloads without any login', async () => {
+    await publishArtifact('v0.9.0', 'windows', 'windows-v9');
+
     const response = await worker.fetch(request('/dl/latest'), env);
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/auth/discord/login?return_to=%2Fdl%2Flatest');
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('windows-v9');
   });
 
   it('starts Discord OAuth with state and the member-read scope', async () => {
@@ -122,7 +123,8 @@ describe('Discord-gated downloads', () => {
       target: 'archive/v0.9.0/linux.zip',
     });
     // The amd64 Windows alias must not be overwritten by the ARM build.
-    expect(await env.RELEASES.get('meta:latest')).toBeNull();
+    const latest = await env.RELEASES.get('meta:latest');
+    expect(latest && (await latest.json<{ target: string }>()).target).not.toBe('archive/v0.9.0/windows-arm64.zip');
   });
 
   it('publishes a versioned artifact and points the latest alias at it', async () => {
@@ -349,25 +351,20 @@ describe('Discord-gated downloads', () => {
     expect(Array.isArray(body.dev)).toBe(true);
   });
 
-  it('marks free-trial members so clients hide source archives', async () => {
+  it('lists the archive and serves source without a login', async () => {
     await publishArtifact('v0.4.1', 'windows', 'windows-v41');
     await publishArtifact('v0.4.1', 'source', 'source-v41');
-    const cookie = await downloadSessionCookie('free_trial');
 
-    const response = await worker.fetch(request('/v1/archive', { headers: { cookie } }), env);
+    const response = await worker.fetch(request('/v1/archive'), env);
     const body = await response.json();
-    const directSource = await worker.fetch(
-      request('/dl/archive/v0.4.1/source.zip', { headers: { cookie } }),
-      env
-    );
+    const directSource = await worker.fetch(request('/dl/archive/v0.4.1/source.zip'), env);
 
     expect(response.status).toBe(200);
-    expect(body.canDownloadSource).toBe(false);
+    expect(body).toMatchObject({ entitled: true, canDownloadSource: true });
     const release = body.stable.find((v: { version: string }) => v.version === 'v0.4.1');
-    expect(release).toBeDefined();
     expect(release.artifacts.windows.key).toBe('archive/v0.4.1/windows.zip');
-    expect(directSource.status).toBe(403);
-    expect(await directSource.json()).toEqual({ error: 'standard_required' });
+    expect(directSource.status).toBe(200);
+    expect(await directSource.text()).toBe('source-v41');
   });
 
   it('serves immutable archive files and latest aliases to an authorized member', async () => {
@@ -413,31 +410,33 @@ describe('Discord-gated downloads', () => {
     expect(new TextDecoder().decode(await response.arrayBuffer())).toBe('windows-v6');
   });
 
-  it('denies source downloads to a free-trial Flutter token', async () => {
-    await publishArtifact('v0.6.1', 'source', 'source-v61');
-    const token = `aura_${'c'.repeat(64)}`;
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-    await env.SERVERS.put(
-      `app-session:${hash}`,
-      JSON.stringify({ discord_id: '987654322', expires_at: Math.floor(Date.now() / 1000) + 86400 })
-    );
-    await env.SERVERS.put(
-      'account:987654322',
-      JSON.stringify({
-        discord_id: '987654322', username: 'trial-source', display_name: 'Trial Source', created_at: 1,
-        expires_at: Math.floor(Date.now() / 1000) + 86400, budget_gb: 1, disabled: false,
-        plan: 'free_trial', trial_claimed_at: 1,
-      })
-    );
-
-    const response = await worker.fetch(
-      request('/dl/source', { headers: { authorization: `Bearer ${token}` } }),
+  it('publishes Windows installers without replacing the zip the Flutter updater uses', async () => {
+    await publishArtifact('v0.9.1', 'windows', 'windows-zip');
+    const form = new FormData();
+    form.set('version', 'v0.9.1');
+    form.set('artifact', 'windows-setup');
+    form.set('file', new File(['installer'], 'Aura_0.9.1_x64-setup.exe'));
+    const published = await worker.fetch(
+      request('/v1/releases/publish', {
+        method: 'POST',
+        headers: { authorization: 'Bearer test-release-upload-token' },
+        body: form,
+      }),
       env
     );
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: 'standard_required' });
+    expect(published.status).toBe(200);
+    expect(await (await env.RELEASES.get('meta:latest-windows-setup'))!.json()).toMatchObject({
+      version: 'v0.9.1',
+      target: 'archive/v0.9.1/windows-setup.exe',
+    });
+    const installer = await worker.fetch(request('/dl/latest-windows-setup'), env);
+    expect(installer.headers.get('content-type')).toBe('application/vnd.microsoft.portable-executable');
+    expect(installer.headers.get('content-disposition')).toContain('aura-v0.9.1-windows-amd64-setup.exe');
+    expect(await installer.text()).toBe('installer');
+    expect(await (await worker.fetch(request('/dl/latest'), env)).text()).toBe('windows-zip');
+    // An installer artifact must actually be an installer.
+    expect((await publishArtifact('v0.9.1', 'windows-setup', 'not-an-exe')).status).toBe(400);
   });
 
   it('issues a download session for a verified Discord identity', async () => {
@@ -467,17 +466,6 @@ describe('Discord-gated downloads', () => {
     expect(response.headers.get('location')).toBe('/archive');
     expect(response.headers.get('set-cookie')).toContain('aura_download=123456789.');
     expect(outbound).toHaveBeenCalledTimes(2);
-  });
-
-  it('denies file downloads for a Discord identity without an entitlement', async () => {
-    await publishArtifact('v0.9.0', 'windows', 'windows-v9');
-    await env.SERVERS.delete('account:123456789');
-    const cookie = await downloadSessionCookie('none');
-
-    const response = await worker.fetch(request('/dl/latest', { headers: { cookie } }), env);
-
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: 'not_entitled' });
   });
 
   it('rejects an OAuth callback whose state does not match the HttpOnly cookie', async () => {

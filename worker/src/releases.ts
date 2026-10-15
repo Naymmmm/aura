@@ -76,8 +76,9 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
     return json({ error: 'bad_request' }, 400);
   }
 
-  const extension = artifact === 'macos' && file.name.toLowerCase().endsWith('.dmg') ? 'dmg' : 'zip';
-  const contentType = extension === 'dmg' ? 'application/x-apple-diskimage' : 'application/zip';
+  const extension = artifactExtension(artifact, file.name);
+  if (isInstallerArtifact(artifact) && extension !== 'exe') return json({ error: 'bad_request' }, 400);
+  const contentType = CONTENT_TYPES[extension];
   const archiveKey = `archive/${version}/${artifact}.${extension}`;
   let sha256: string;
   if (/^[a-f0-9]{64}$/.test(suppliedSha256)) {
@@ -194,8 +195,43 @@ function isReleaseChangelog(value: string): boolean {
     value.endsWith('<@&1544233739322789948>');
 }
 
-type ArchiveArtifact = 'windows' | 'windows-arm64' | 'macos' | 'linux' | 'source';
-const ARCHIVE_ARTIFACTS: readonly ArchiveArtifact[] = ['windows', 'windows-arm64', 'macos', 'linux', 'source'];
+type ArchiveArtifact =
+  | 'windows'
+  | 'windows-arm64'
+  | 'windows-setup'
+  | 'windows-arm64-setup'
+  | 'macos'
+  | 'linux'
+  | 'source';
+const ARCHIVE_ARTIFACTS: readonly ArchiveArtifact[] = [
+  'windows',
+  'windows-arm64',
+  'windows-setup',
+  'windows-arm64-setup',
+  'macos',
+  'linux',
+  'source',
+];
+
+type ArtifactExtension = 'zip' | 'dmg' | 'exe';
+const CONTENT_TYPES: Record<ArtifactExtension, string> = {
+  zip: 'application/zip',
+  dmg: 'application/x-apple-diskimage',
+  exe: 'application/vnd.microsoft.portable-executable',
+};
+
+// Windows installers are separate artifacts: `latest` stays a zip because the
+// Flutter app's Windows auto-updater downloads and unzips it.
+function isInstallerArtifact(artifact: ArchiveArtifact): boolean {
+  return artifact === 'windows-setup' || artifact === 'windows-arm64-setup';
+}
+
+function artifactExtension(artifact: ArchiveArtifact, fileName: string): ArtifactExtension {
+  const name = fileName.toLowerCase();
+  if (isInstallerArtifact(artifact)) return name.endsWith('.exe') ? 'exe' : 'zip';
+  if (artifact === 'macos' && name.endsWith('.dmg')) return 'dmg';
+  return 'zip';
+}
 
 interface ArchiveArtifactMeta {
   key: string;
@@ -221,14 +257,18 @@ function isArchiveArtifact(value: string): value is ArchiveArtifact {
 function canonicalKey(artifact: ArchiveArtifact): string {
   if (artifact === 'windows') return 'latest';
   if (artifact === 'windows-arm64') return 'latest-windows-arm64';
+  if (artifact === 'windows-setup') return 'latest-windows-setup';
+  if (artifact === 'windows-arm64-setup') return 'latest-windows-arm64-setup';
   if (artifact === 'macos') return 'latest-macos';
   if (artifact === 'linux') return 'latest-linux';
   return 'source';
 }
 
-function artifactFileName(artifact: ArchiveArtifact, version: string, extension?: 'zip' | 'dmg'): string {
+function artifactFileName(artifact: ArchiveArtifact, version: string, extension?: ArtifactExtension): string {
   if (artifact === 'windows') return `aura-${version}-windows-amd64.zip`;
   if (artifact === 'windows-arm64') return `aura-${version}-windows-arm64.zip`;
+  if (artifact === 'windows-setup') return `aura-${version}-windows-amd64-setup.exe`;
+  if (artifact === 'windows-arm64-setup') return `aura-${version}-windows-arm64-setup.exe`;
   if (artifact === 'linux') return `aura-${version}-linux-x64.zip`;
   if (artifact === 'macos') return `aura-${version}-macos-arm64.${extension ?? 'dmg'}`;
   return `aura-${version}-source.zip`;
@@ -409,11 +449,12 @@ export async function serveReleaseMeta(req: Request, env: Env): Promise<Response
 }
 
 const VERSION_RE = /^v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/;
-const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|windows-arm64\.zip|linux\.zip|macos\.(?:zip|dmg)|source\.zip)$/;
+const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|windows-arm64\.zip|windows-setup\.exe|windows-arm64-setup\.exe|linux\.zip|macos\.(?:zip|dmg)|source\.zip)$/;
 
 // GET /dl/{key} — caller has already passed the Discord session gate.
 export async function serveDownload(req: Request, env: Env, key: string): Promise<Response> {
-  const canonical = /^(latest|latest-macos|latest-windows-arm64|latest-linux|source)$/.test(key);
+  const canonical =
+    /^(latest|latest-macos|latest-windows-arm64|latest-windows-setup|latest-windows-arm64-setup|latest-linux|source)$/.test(key);
   if (!canonical && !ARCHIVE_KEY_RE.test(key)) return json({ error: 'not found' }, 404);
   let objectKey = key;
   let legacyType: string | undefined;
@@ -449,8 +490,9 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
   if (!obj) return json({ error: 'not found' }, 404);
 
   const isDmg = objectKey.endsWith('.dmg') || legacyType === 'dmg';
+  const extension: ArtifactExtension = objectKey.endsWith('.exe') ? 'exe' : isDmg ? 'dmg' : 'zip';
   const headers: Record<string, string> = {
-    'content-type': isDmg ? 'application/x-apple-diskimage' : 'application/zip',
+    'content-type': CONTENT_TYPES[extension],
     'content-disposition': `attachment; filename="${dlName(objectKey, key, isDmg)}"`,
     etag: obj.etag,
     'accept-ranges': 'bytes',
@@ -480,8 +522,10 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
 }
 
 function dlName(objectKey: string, requestedKey: string, isDmg: boolean): string {
-  const match = objectKey.match(/^archive\/(v[^/]+)\/(windows|windows-arm64|macos|linux|source)\.(zip|dmg)$/);
-  if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1], match[3] as 'zip' | 'dmg');
+  const match = objectKey.match(
+    /^archive\/(v[^/]+)\/(windows|windows-arm64|windows-setup|windows-arm64-setup|macos|linux|source)\.(zip|dmg|exe)$/
+  );
+  if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1], match[3] as ArtifactExtension);
   if (requestedKey === 'latest') return 'aura-windows-amd64.zip';
   if (requestedKey === 'latest-macos') return isDmg ? 'aura-macos-arm64.dmg' : 'aura-macos-arm64.zip';
   if (requestedKey === 'latest-windows-arm64') return 'aura-windows-arm64.zip';

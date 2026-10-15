@@ -56,7 +56,10 @@ jobs:
           publish() {
             sha256="$(sha256sum "$2" | awk '{print $1}')"
             content_type=application/zip
-            case "$2" in *.dmg) content_type=application/x-apple-diskimage ;; esac
+            case "$2" in
+              *.dmg) content_type=application/x-apple-diskimage ;;
+              *.exe) content_type=application/vnd.microsoft.portable-executable ;;
+            esac
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
               -F "version=${{ inputs.version }}" \
@@ -67,6 +70,12 @@ jobs:
           }
           publish windows dist/aura-windows-amd64/aura-windows-amd64.zip
           publish windows-arm64 dist/aura-windows-arm64/aura-windows-arm64.zip
+          # Builds from before the installer existed only have zips.
+          for arch in amd64 arm64; do
+            setup="dist/aura-windows-$arch/aura-windows-$arch-setup.exe"
+            artifact=windows-setup; [ "$arch" = arm64 ] && artifact=windows-arm64-setup
+            if [ -f "$setup" ]; then publish "$artifact" "$setup"; fi
+          done
           publish macos dist/aura-macos-universal/aura-macos-universal.dmg
           publish linux dist/aura-linux-x64/aura-linux-x64.zip
           publish source aura-source.zip
@@ -93,4 +102,5 @@ jobs:
             dist/**/*.zip
             dist/**/*.dmg
             dist/**/*.deb
+            dist/**/*.exe
             aura-source.zip

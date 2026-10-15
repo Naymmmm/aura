@@ -8,8 +8,10 @@ import { fetchArchive, type ArchiveResponse, type ArchiveVersion, type ArtifactT
 
 function artifactLabel(artifact: ArtifactType): string {
   const labels: Record<ArtifactType, string> = {
-    windows: 'Windows',
-    'windows-arm64': 'Windows ARM',
+    windows: 'Windows (zip)',
+    'windows-arm64': 'Windows ARM (zip)',
+    'windows-setup': 'Windows installer',
+    'windows-arm64-setup': 'Windows ARM installer',
     macos: 'macOS',
     linux: 'Linux',
     source: 'Source',
@@ -18,7 +20,9 @@ function artifactLabel(artifact: ArtifactType): string {
 }
 
 function ArtifactLinks({ version, canDownloadSource }: { version: ArchiveVersion; canDownloadSource: boolean }) {
-  const artifacts = (['windows', 'windows-arm64', 'macos', 'linux', 'source'] as ArtifactType[])
+  const artifacts = (
+    ['windows-setup', 'windows-arm64-setup', 'windows', 'windows-arm64', 'macos', 'linux', 'source'] as ArtifactType[]
+  )
     .filter((artifact) => artifact !== 'source' || canDownloadSource)
     .filter((artifact) => version.artifacts[artifact]);
 
@@ -28,7 +32,7 @@ function ArtifactLinks({ version, canDownloadSource }: { version: ArchiveVersion
     <div className="flex flex-wrap gap-2 justify-end max-sm:justify-start">
       {artifacts.map((artifact) => {
         const key = version.artifacts[artifact]!.key;
-        const ext = key.endsWith('.dmg') ? 'dmg' : 'zip';
+        const ext = key.slice(key.lastIndexOf('.') + 1);
         return (
           <Button key={artifact} variant="outline" size="sm" asChild>
             <a href={`/dl/archive/${version.version}/${artifact}.${ext}`}>{artifactLabel(artifact)}</a>
