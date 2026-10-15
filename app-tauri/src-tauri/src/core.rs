@@ -572,27 +572,44 @@ Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $install, $runtime | Out-Null
 & icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Force
-# Stop-Process returns before Windows releases the exe; wait for it to exit.
+# Stop the old helper and its NaiveProxy child: naive.exe outlives a killed
+# aura-core.exe and keeps its file locked. Match by path so unrelated
+# processes with the same name are left alone.
+function Get-HelperProcesses {{
+  Get-CimInstance Win32_Process -Filter "Name='aura-core.exe' OR Name='naive.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith($install + '\', [StringComparison]::OrdinalIgnoreCase) }}
+}}
+Get-HelperProcesses | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
+# Stop-Process returns before Windows releases the files; wait for exit.
 $deadline = (Get-Date).AddSeconds(20)
-while ((Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {{
+while ((Get-HelperProcesses) -and (Get-Date) -lt $deadline) {{
   Start-Sleep -Milliseconds 300
 }}
-# The exe can stay locked briefly after exit; retry the copy before giving up.
-$copied = $false
-for ($i = 0; $i -lt 10 -and -not $copied; $i++) {{
-  try {{
-    Copy-Item -LiteralPath {aura} -Destination $installedCore -Force
-    Copy-Item -LiteralPath {naive} -Destination (Join-Path $install 'naive.exe') -Force
-    # aura-core loads wintun.dll from its own folder to create the TUN adapter.
-    $wintun = Join-Path (Split-Path -LiteralPath {naive}) 'wintun.dll'
-    if (Test-Path -LiteralPath $wintun) {{ Copy-Item -LiteralPath $wintun -Destination (Join-Path $install 'wintun.dll') -Force }}
-    $copied = $true
-  }} catch {{
-    Start-Sleep -Milliseconds 500
+# Copy one file into place. A file Windows still holds open can't be
+# overwritten but can be renamed, so move it aside and copy fresh.
+function Install-HelperFile($source, $name) {{
+  $target = Join-Path $install $name
+  for ($i = 0; $i -lt 5; $i++) {{
+    try {{
+      Copy-Item -LiteralPath $source -Destination $target -Force
+      return
+    }} catch {{
+      $script:copyError = $_.Exception.Message
+      if (Test-Path -LiteralPath $target) {{
+        try {{ Move-Item -LiteralPath $target -Destination "$target.old-$([guid]::NewGuid().ToString('N'))" -Force }} catch {{ }}
+      }}
+      Start-Sleep -Milliseconds 400
+    }}
   }}
+  throw "could not install $name into ${{install}}: $script:copyError"
 }}
-if (-not $copied) {{ throw "could not replace the Aura helper in $install (is it still running?)" }}
+Install-HelperFile {aura} 'aura-core.exe'
+Install-HelperFile {naive} 'naive.exe'
+# aura-core loads wintun.dll from its own folder to create the TUN adapter.
+$wintun = Join-Path (Split-Path -LiteralPath {naive}) 'wintun.dll'
+if (Test-Path -LiteralPath $wintun) {{ Install-HelperFile $wintun 'wintun.dll' }}
+# Best effort: files moved aside are deleted once nothing holds them.
+Get-ChildItem -LiteralPath $install -Filter '*.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 $taskArguments = 'serve --state-dir "' + $runtime + '" --token-file "' + {token} + '"'
 $action = New-ScheduledTaskAction -Execute $installedCore -Argument $taskArguments
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
