@@ -552,66 +552,121 @@ fn install_linux(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), Str
     }
 }
 
-fn install_windows(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), String> {
-    let install = r"C:\Program Files\Aura Core";
-    let runtime = r"C:\ProgramData\Aura Core";
-    let task = "Aura Core Helper";
-    let ps = format!(
-        r#"
-$ErrorActionPreference='Stop'
-$install = '{install}'
-$runtime = '{runtime}'
-$taskName = '{task}'
-$tokenFile = '{token}'
-New-Item -ItemType Directory -Force -Path $install,$runtime | Out-Null
-& icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Milliseconds 600
-Copy-Item '{aura}' $install\aura-core.exe -Force
-Copy-Item '{naive}' $install\naive.exe -Force
-# aura-core loads wintun.dll from its own folder to create the TUN adapter.
-$wintun = Join-Path (Split-Path '{naive}') 'wintun.dll'
-if (Test-Path $wintun) {{ Copy-Item $wintun $install\wintun.dll -Force }}
-$args = 'serve --state-dir "' + $runtime + '" --token-file "' + $tokenFile + '"'
+/// PowerShell single-quoted literal; ' is escaped as ''.
+fn ps_quote(p: &Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', "''"))
+}
+
+/// The elevated install script. It writes "ok" or the failure detail to
+/// `result_file` and exits non-zero on failure.
+fn windows_install_script(result_file: &Path, aura: &Path, naive: &Path, token_file: &Path) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$resultFile = {result}
+try {{
+$install = Join-Path $env:ProgramFiles 'Aura Core'
+$runtime = Join-Path $env:ProgramData 'Aura Core'
+$taskName = 'Aura Core Helper'
+$installedCore = Join-Path $install 'aura-core.exe'
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-$action = New-ScheduledTaskAction -Execute "$install\aura-core.exe" -Argument $args
+New-Item -ItemType Directory -Force -Path $install, $runtime | Out-Null
+& icacls.exe $runtime /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue | Stop-Process -Force
+# Stop-Process returns before Windows releases the exe; wait for it to exit.
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Process -Name 'aura-core' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {{
+  Start-Sleep -Milliseconds 300
+}}
+# The exe can stay locked briefly after exit; retry the copy before giving up.
+$copied = $false
+for ($i = 0; $i -lt 10 -and -not $copied; $i++) {{
+  try {{
+    Copy-Item -LiteralPath {aura} -Destination $installedCore -Force
+    Copy-Item -LiteralPath {naive} -Destination (Join-Path $install 'naive.exe') -Force
+    # aura-core loads wintun.dll from its own folder to create the TUN adapter.
+    $wintun = Join-Path (Split-Path -LiteralPath {naive}) 'wintun.dll'
+    if (Test-Path -LiteralPath $wintun) {{ Copy-Item -LiteralPath $wintun -Destination (Join-Path $install 'wintun.dll') -Force }}
+    $copied = $true
+  }} catch {{
+    Start-Sleep -Milliseconds 500
+  }}
+}}
+if (-not $copied) {{ throw "could not replace the Aura helper in $install (is it still running?)" }}
+$taskArguments = 'serve --state-dir "' + $runtime + '" --token-file "' + {token} + '"'
+$action = New-ScheduledTaskAction -Execute $installedCore -Argument $taskArguments
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
+# Only report success once the helper is actually listening.
+$online = $false
+for ($i = 0; $i -lt 40 -and -not $online; $i++) {{
+  try {{
+    $client = New-Object System.Net.Sockets.TcpClient
+    $client.Connect('127.0.0.1', 45873)
+    $client.Close()
+    $online = $true
+  }} catch {{
+    Start-Sleep -Milliseconds 250
+  }}
+}}
+if (-not $online) {{
+  $helperLog = Join-Path $runtime 'helper.log'
+  $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+  $detail = "aura-core did not start (task result $($taskInfo.LastTaskResult))."
+  if (Test-Path -LiteralPath $helperLog) {{ $detail += "`n" + (Get-Content -Raw -LiteralPath $helperLog) }}
+  Set-Content -LiteralPath $resultFile -Value $detail
+  exit 1
+}}
+Set-Content -LiteralPath $resultFile -Value 'ok'
+}} catch {{
+  Set-Content -LiteralPath $resultFile -Value ($_ | Out-String)
+  exit 1
+}}
 "#,
-        install = install,
-        runtime = runtime,
-        task = task,
-        token = token_file.display(),
-        aura = aura.display(),
-        naive = naive.display()
-    );
-    // Write the script to a temp file the elevated process can read, then
-    // launch it elevated via Start-Process -Verb RunAs (UAC prompt).
-    let script_path = std::env::temp_dir().join("aura-core-install.ps1");
+        result = ps_quote(result_file),
+        aura = ps_quote(aura),
+        naive = ps_quote(naive),
+        token = ps_quote(token_file),
+    )
+}
+
+/// Elevates `script` via UAC and exits with its exit code (2 when the UAC
+/// prompt is declined). Without -PassThru, Start-Process reports success even
+/// when the script failed.
+fn windows_launch_command(script: &Path) -> String {
+    format!(
+        "try {{ $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('\"' + {} + '\"')) }} catch {{ exit 2 }}; exit $p.ExitCode",
+        ps_quote(script)
+    )
+}
+
+fn install_windows(aura: &Path, naive: &Path, token_file: &Path) -> Result<(), String> {
+    let stage = std::env::temp_dir().join("aura-core-install");
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    let result_file = stage.join("result.txt");
+    let script_path = stage.join("install.ps1");
+    let ps = windows_install_script(&result_file, aura, naive, token_file);
     std::fs::write(&script_path, &ps).map_err(|e| e.to_string())?;
-    let launch = format!(
-        "Start-Process powershell.exe -Wait -Verb RunAs -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','{}'",
-        script_path.display()
-    );
-    let status = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            launch.as_str(),
-        ])
-        .status()
-        .map_err(|e| format!("elevation: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("admin install was cancelled or failed".to_string())
+    let launch = windows_launch_command(&script_path);
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", launch.as_str()]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let status = cmd.status().map_err(|e| format!("elevation: {e}"))?;
+    let detail = std::fs::read_to_string(&result_file).unwrap_or_default();
+    let detail = detail.trim();
+    match status.code() {
+        Some(0) if detail == "ok" => Ok(()),
+        Some(2) => Err("admin install was cancelled".to_string()),
+        _ if !detail.is_empty() && detail != "ok" => Err(format!("helper install failed: {detail}")),
+        code => Err(format!("helper install failed (exit code {code:?})")),
     }
 }
 
@@ -639,4 +694,37 @@ pub fn uninstall(app_data_dir: &Path) -> Result<(), String> {
         .status();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes the Windows install scripts for an awkward user path. Set
+    /// AURA_PWSH to a PowerShell binary to also parse-check them.
+    #[test]
+    fn windows_install_scripts_parse() {
+        let dir = std::env::temp_dir().join("aura-ps-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = Path::new(r"C:\Users\O'Brien Smith\AppData\Roaming\com.copal.aura");
+        let script = windows_install_script(
+            &dir.join("result.txt"),
+            &user.join(r"resources\aura-core\aura-core.exe"),
+            &user.join(r"resources\aura-core\naive.exe"),
+            &user.join(r"aura-core\api.token"),
+        );
+        assert!(script.contains("O''Brien Smith"));
+        assert!(!script.contains("$args"));
+        std::fs::write(dir.join("install.ps1"), &script).unwrap();
+        std::fs::write(dir.join("launch.ps1"), windows_launch_command(&dir.join("install.ps1"))).unwrap();
+        let Ok(pwsh) = std::env::var("AURA_PWSH") else { return };
+        for name in ["install.ps1", "launch.ps1"] {
+            let check = format!(
+                "$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('{}',[ref]$null,[ref]$e); if ($e.Count) {{ $e | % {{ $_.ToString() }}; exit 1 }}",
+                dir.join(name).display()
+            );
+            let out = Command::new(&pwsh).args(["-NoProfile", "-Command", &check]).output().unwrap();
+            assert!(out.status.success(), "{name}: {}", String::from_utf8_lossy(&out.stdout));
+        }
+    }
 }
