@@ -10,6 +10,8 @@ import {
   authPoll,
   authStart,
   checkUpdate,
+  installUpdate,
+  loadSplitTunnel,
   clearAuth,
   closeSession,
   coreHelper,
@@ -98,6 +100,8 @@ export function useAura() {
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [authError, setAuthError] = useState<AuthErrorKind | null>(null);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [autoConnectPending, setAutoConnectPending] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [tailscale, setTailscale] = useState("");
   const [egressIp, setEgressIp] = useState<string | null>(null);
@@ -469,7 +473,7 @@ export function useAura() {
       const isAuto = tag === AUTO_TAG;
       const selected = cfg.servers.find((x) => x.tag === tag) ?? cfg.servers[0];
       if (!selected) throw new Error("no servers to connect");
-      const active = await coreStart(isAuto, selected, cfg.servers, cfg.prefer_ip);
+      const active = await coreStart(isAuto, selected, cfg.servers, cfg.prefer_ip, loadSplitTunnel());
       setActiveServer(active);
       activeRef.current = active;
       setPhase("connected");
@@ -577,21 +581,63 @@ export function useAura() {
     }
   }, [log, openSessionFresh, probeLatencies, setBudget, syncSelected]);
 
-  const checkForUpdate = useCallback(async () => {
+  const updatingRef = useRef(false);
+  const installAppUpdate = useCallback(async () => {
+    if (updatingRef.current) return;
+    updatingRef.current = true;
+    setUpdating(true);
     try {
-      const v = await checkUpdate();
-      if (v && v !== updateVersion) {
-        setUpdateVersion(v);
-        log(`update available: ${v} — installing is one click away`);
+      // The new build starts disconnected; don't leave a tunnel up with
+      // nobody sending heartbeats.
+      if (phaseRef.current === "connected" || phaseRef.current === "connecting") {
+        await disconnect().catch(() => {});
       }
+      log("downloading the update…");
+      await installUpdate();
     } catch (e) {
-      log(`update check failed: ${e}`);
+      log(`update failed: ${e}`);
+      toast.error(`Update failed: ${e}`);
+    } finally {
+      updatingRef.current = false;
+      setUpdating(false);
     }
-  }, [log, updateVersion]);
+  }, [disconnect, log]);
+
+  /** Looks for a newer Aura and returns its version. With `autoInstall`, an
+   *  update found while the tunnel is down is installed straight away and
+   *  Aura restarts into it; while connected it waits for the user to press
+   *  Update. */
+  const checkForUpdate = useCallback(
+    async (autoInstall = false): Promise<string | null> => {
+      let v: string | null = null;
+      try {
+        v = await checkUpdate();
+      } catch (e) {
+        log(`update check failed: ${e}`);
+      }
+      if (!v) return null;
+      setUpdateVersion(v);
+      log(`update available: ${v}`);
+      if (autoInstall && phaseRef.current !== "connected" && phaseRef.current !== "connecting") {
+        await installAppUpdate();
+      }
+      return v;
+    },
+    [installAppUpdate, log],
+  );
+
+  // Long-running installs pick up releases too.
+  useEffect(() => {
+    const timer = setInterval(() => void checkForUpdate(true), 6 * 60 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [checkForUpdate]);
 
   // ---- init ----------------------------------------------------------------
 
   const init = useCallback(async () => {
+    // Updates first, so a login launch doesn't connect only to restart. A
+    // successful install restarts Aura; a failed one carries on as usual.
+    await checkForUpdate(true);
     const auth = loadAuth();
     if (auth) {
       try {
@@ -607,6 +653,7 @@ export function useAura() {
         setPhase("disconnected");
         probeLatencies(s.config);
         log(`welcome back, ${s.account.display_name}`);
+        if (localStorage.getItem("aura.autoconnect") === "1") setAutoConnectPending(true);
       } catch (e) {
         if (typeof e === "string" && isAuthKind(e)) {
           setAuthError(e);
@@ -622,9 +669,16 @@ export function useAura() {
     } else {
       setPhase("loggedOut");
     }
-    void checkForUpdate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // "Connect when Aura opens": runs once the saved login has loaded.
+  useEffect(() => {
+    if (!autoConnectPending || phase !== "disconnected") return;
+    setAutoConnectPending(false);
+    log("connecting automatically");
+    void connect();
+  }, [autoConnectPending, phase, connect, log]);
 
   useEffect(() => {
     void init();
@@ -698,6 +752,8 @@ export function useAura() {
     statusLine,
     authError,
     updateVersion,
+    updating,
+    installAppUpdate,
     logs,
     egressIp,
     proxyAddr,

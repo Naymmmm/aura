@@ -1,6 +1,6 @@
 [package]
 name = "aura-core"
-version = "26.3.1"
+version = "26.4.0"
 edition = "2021"
 publish = false
 description = "Aura's privileged tunnel supervisor"

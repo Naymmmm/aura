@@ -439,6 +439,78 @@ describe('public downloads', () => {
     expect((await publishArtifact('v0.9.1', 'windows-setup', 'not-an-exe')).status).toBe(400);
   });
 
+  it('serves signed Tauri updates and reports current installs as up to date', async () => {
+    const signature = 'dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUZXN0U2lnbmF0dXJlQmFzZTY0QWJjZGVmZ2hpams=';
+    async function publish(version: string, artifact: string, fileName: string, sig: string | null, promote = true) {
+      const form = new FormData();
+      form.set('version', version);
+      form.set('artifact', artifact);
+      form.set('promote', String(promote));
+      if (sig !== null) form.set('signature', sig);
+      form.set('file', new File([`${artifact}-${version}`], fileName));
+      return worker.fetch(
+        request('/v1/releases/publish', {
+          method: 'POST',
+          headers: { authorization: 'Bearer test-release-upload-token' },
+          body: form,
+        }),
+        env
+      );
+    }
+
+    // Update payloads must be signed, of the right type, with a sane signature.
+    expect((await publish('v1.2.0', 'macos-update', 'Aura.app.tar.gz', null)).status).toBe(400);
+    expect((await publish('v1.2.0', 'macos-update', 'Aura.app.tar.gz', 'not a signature!')).status).toBe(400);
+    expect((await publish('v1.2.0', 'macos-update', 'Aura.dmg', signature)).status).toBe(400);
+    expect((await publish('v1.2.0', 'macos-update', 'Aura.app.tar.gz', signature)).status).toBe(200);
+    expect((await publish('v1.2.0', 'windows-setup', 'Aura_1.2.0_x64-setup.exe', signature)).status).toBe(200);
+    expect((await publish('v1.2.0', 'linux-update', 'Aura_1.2.0_amd64.AppImage', signature)).status).toBe(200);
+
+    const mac = await worker.fetch(request('/v1/update/darwin/aarch64/1.1.9'), env);
+    expect(mac.status).toBe(200);
+    const body = (await mac.json()) as { version: string; url: string; signature: string; pub_date: string };
+    expect(body).toMatchObject({
+      version: '1.2.0',
+      url: 'https://api.copal.run/dl/archive/v1.2.0/macos-update.tar.gz',
+      signature,
+    });
+    expect(Number.isNaN(Date.parse(body.pub_date))).toBe(false);
+    expect((await worker.fetch(request('/v1/update/darwin/x86_64/1.1.9'), env)).status).toBe(200);
+
+    const payload = await worker.fetch(request('/dl/archive/v1.2.0/macos-update.tar.gz'), env);
+    expect(payload.headers.get('content-type')).toBe('application/gzip');
+    expect(payload.headers.get('content-disposition')).toContain('aura-v1.2.0-macos-universal.app.tar.gz');
+    expect(await payload.text()).toBe('macos-update-v1.2.0');
+
+    const windows = (await (await worker.fetch(request('/v1/update/windows/x86_64/1.0.0'), env)).json()) as {
+      url: string;
+    };
+    expect(windows.url).toBe('https://api.copal.run/dl/archive/v1.2.0/windows-setup.exe');
+    const linux = (await (await worker.fetch(request('/v1/update/linux/x86_64/1.0.0'), env)).json()) as {
+      url: string;
+    };
+    expect(linux.url).toBe('https://api.copal.run/dl/archive/v1.2.0/linux-update.AppImage');
+    expect(await (await worker.fetch(request('/dl/archive/v1.2.0/linux-update.AppImage'), env)).text()).toBe(
+      'linux-update-v1.2.0'
+    );
+
+    // Same or newer installs, unknown platforms, and builds without a signed
+    // payload (the ARM installer here) are all "no update".
+    for (const path of [
+      '/v1/update/darwin/aarch64/1.2.0',
+      '/v1/update/darwin/aarch64/v1.3.0',
+      '/v1/update/windows/aarch64/1.0.0',
+      '/v1/update/linux/armv7/1.0.0',
+      '/v1/update/darwin/aarch64/garbage',
+    ]) {
+      expect((await worker.fetch(request(path), env)).status, path).toBe(204);
+    }
+
+    // Dev builds are archived but never offered as updates.
+    expect((await publish('v1.3.0-tauri-dev.4', 'macos-update', 'Aura.app.tar.gz', signature, false)).status).toBe(200);
+    expect(((await (await worker.fetch(request('/v1/update/darwin/aarch64/1.1.0'), env)).json()) as { version: string }).version).toBe('1.2.0');
+  });
+
   it('issues a download session for a verified Discord identity', async () => {
     const login = await worker.fetch(request('/auth/discord/login?return_to=%2Farchive'), env);
     const state = new URL(login.headers.get('location')!).searchParams.get('state')!;

@@ -12,6 +12,10 @@ on:
 env:
   NAIVE_VERSION: 150.0.7871.63-1
   CARGO_TERM_COLOR: always
+  # Signs the in-app update payloads; the app only installs updates that
+  # verify against the public key in tauri.conf.json.
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
 jobs:
   windows:
@@ -100,6 +104,8 @@ jobs:
           $setup = Get-ChildItem "$rel\bundle\nsis\*-setup.exe" | Select-Object -First 1
           if (-not $setup) { throw 'NSIS installer was not built' }
           Copy-Item $setup.FullName aura-windows-${{ matrix.arch }}-setup.exe -Force
+          # The updater installs the same NSIS installer, checked against this.
+          Copy-Item "$($setup.FullName).sig" aura-windows-${{ matrix.arch }}-setup.exe.sig -Force
 
       - uses: actions/upload-artifact@v4
         with:
@@ -107,6 +113,7 @@ jobs:
           path: |
             aura-windows-${{ matrix.arch }}.zip
             aura-windows-${{ matrix.arch }}-setup.exe
+            aura-windows-${{ matrix.arch }}-setup.exe.sig
 
   macos:
     runs-on: macos-latest
@@ -156,17 +163,24 @@ jobs:
         working-directory: app-tauri
         run: npm ci
 
-      - name: Build Tauri app (universal DMG)
+      - name: Build Tauri app (universal DMG + signed update)
         working-directory: app-tauri
-        run: npx tauri build --target universal-apple-darwin --bundles dmg
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
 
-      - name: Collect DMG
-        run: cp app-tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg aura-macos-universal.dmg
+      - name: Collect DMG and update payload
+        run: |
+          b=app-tauri/src-tauri/target/universal-apple-darwin/release/bundle
+          cp $b/dmg/*.dmg aura-macos-universal.dmg
+          cp $b/macos/Aura.app.tar.gz aura-macos-universal.app.tar.gz
+          cp $b/macos/Aura.app.tar.gz.sig aura-macos-universal.app.tar.gz.sig
 
       - uses: actions/upload-artifact@v4
         with:
           name: aura-macos-universal
-          path: aura-macos-universal.dmg
+          path: |
+            aura-macos-universal.dmg
+            aura-macos-universal.app.tar.gz
+            aura-macos-universal.app.tar.gz.sig
 
   linux:
     # 22.04's older glibc/WebKitGTK keeps the AppImage runnable on older distros.
@@ -221,12 +235,17 @@ jobs:
           # AppImage; the .deb ships alongside it on the GitHub release.
           zip -j aura-linux-x64.zip $b/appimage/*.AppImage
           cp $b/deb/*.deb .
+          # The in-app updater replaces the AppImage itself.
+          cp $b/appimage/*.AppImage aura-linux-x64.AppImage
+          cp $b/appimage/*.AppImage.sig aura-linux-x64.AppImage.sig
 
       - uses: actions/upload-artifact@v4
         with:
           name: aura-linux-x64
           path: |
             aura-linux-x64.zip
+            aura-linux-x64.AppImage
+            aura-linux-x64.AppImage.sig
             *.deb
 
   publish:
@@ -261,20 +280,27 @@ jobs:
         run: |
           set -euo pipefail
           git archive --format=zip --prefix="aura-${VERSION}/" --output aura-source.zip HEAD
+          # publish <artifact> <file>: a <file>.sig next to it is the updater
+          # signature and goes along with it.
           publish() {
             local sha256 content_type
+            local -a signature=()
             sha256="$(sha256sum "$2" | awk '{print $1}')"
             content_type=application/zip
             case "$2" in
               *.dmg) content_type=application/x-apple-diskimage ;;
               *.exe) content_type=application/vnd.microsoft.portable-executable ;;
+              *.tar.gz) content_type=application/gzip ;;
+              *.AppImage) content_type=application/octet-stream ;;
             esac
+            if [ -f "$2.sig" ]; then signature=(-F "signature=$(cat "$2.sig")"); fi
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
               -F "version=${VERSION}" \
               -F "artifact=$1" \
               -F "sha256=${sha256}" \
               -F "promote=${PROMOTE}" \
+              "${signature[@]}" \
               -F "file=@$2;type=${content_type}" \
               https://api.copal.run/v1/releases/publish
           }
@@ -283,7 +309,9 @@ jobs:
           publish windows-setup dist/aura-windows-amd64/aura-windows-amd64-setup.exe
           publish windows-arm64-setup dist/aura-windows-arm64/aura-windows-arm64-setup.exe
           publish macos dist/aura-macos-universal/aura-macos-universal.dmg
+          publish macos-update dist/aura-macos-universal/aura-macos-universal.app.tar.gz
           publish linux dist/aura-linux-x64/aura-linux-x64.zip
+          publish linux-update dist/aura-linux-x64/aura-linux-x64.AppImage
           publish source aura-source.zip
 
       - name: Announce release in Discord

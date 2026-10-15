@@ -6,16 +6,20 @@
 //!   * `core`   — the privileged aura-core helper lifecycle (simulated for this port)
 //!   * `usage`  — monthly data budget persistence (was UsageTracker)
 //!   * `models` — the serde types mirroring Aura's Dart models
+//!   * `updates` — signed in-app updates through the Tauri updater
 
 mod api;
 mod core;
 mod models;
 mod tray;
+mod updates;
 mod usage;
 
 use serde::Serialize;
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt;
 
+use crate::core::SplitTunnel;
 use crate::models::{AuthPoll, AuthStart, ServerInfo, SessionInfo};
 
 #[derive(Serialize)]
@@ -92,11 +96,39 @@ async fn close_session(session_id: String) {
 }
 
 #[tauri::command]
-async fn check_update() -> Result<Option<String>, String> {
-    api::check_update(api::platform_key())
-        .await
-        .map_err(|e| e.command_str())
+async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    updates::check(&app).await
 }
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    updates::install(&app).await
+}
+
+// ---- Launch at login ----------------------------------------------------------
+
+#[tauri::command]
+fn autostart_enabled(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let launcher = app.autolaunch();
+    let result = if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    result.map_err(|e| e.to_string())
+}
+
+/// True when the OS started Aura at login rather than the user opening it.
+fn launched_at_login() -> bool {
+    std::env::args().any(|a| a == AUTOSTART_ARG)
+}
+
+const AUTOSTART_ARG: &str = "--autostart";
 
 // ---- Simulated aura-core helper (ports AuraCoreManager) ---------------------
 
@@ -106,10 +138,14 @@ async fn core_start(
     selected: ServerInfo,
     servers: Vec<ServerInfo>,
     prefer_ip: bool,
+    split: Option<SplitTunnel>,
 ) -> Result<String, String> {
     // The daemon IPC is blocking (request + probe + poll). Run it off the async
     // runtime thread so reqwest::blocking never deadlocks inside Tauri.
-    tauri::async_runtime::spawn_blocking(move || core::start(auto, &selected, &servers, prefer_ip))
+    let split = split.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        core::start(auto, &selected, &servers, prefer_ip, &split)
+    })
     .await
     .map_err(|e| e.to_string())?
 }
@@ -198,6 +234,13 @@ fn usage_add(app: tauri::AppHandle, account_id: String, delta: i64) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent)
+                .arg(AUTOSTART_ARG)
+                .build(),
+        )
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
                 core::set_app_data_dir(dir);
@@ -206,6 +249,13 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::init(app.handle())?;
+            // The window starts hidden; a login launch stays in the tray.
+            if !launched_at_login() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             Ok(())
         })
         // Closing the window just hides it; Aura keeps running in the tray.
@@ -227,6 +277,9 @@ pub fn run() {
             heartbeat,
             close_session,
             check_update,
+            install_update,
+            autostart_enabled,
+            set_autostart,
             core_start,
             core_stop,
             core_status,

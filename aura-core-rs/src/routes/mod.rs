@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
+use std::time::Duration;
 
-use crate::config::ServerConfig;
+use crate::config::{parse_bypass_entry, AuraConfig, BypassEntry, Ipv4Net, ServerConfig};
 
 #[cfg(target_os = "macos")]
 mod darwin;
@@ -79,9 +80,67 @@ pub fn server_ipv4(servers: &[ServerConfig]) -> Result<Vec<Ipv4Addr>, String> {
     Ok(values)
 }
 
-pub fn run_command(name: &str, args: &[&str]) -> Result<String, String> {
+const LAN_RANGES: [(Ipv4Addr, u8); 4] = [
+    (Ipv4Addr::new(10, 0, 0, 0), 8),
+    (Ipv4Addr::new(172, 16, 0, 0), 12),
+    (Ipv4Addr::new(192, 168, 0, 0), 16),
+    (Ipv4Addr::new(169, 254, 0, 0), 16),
+];
+
+/// Every network routed around the tunnel: the servers (so the transport
+/// never loops into its own TUN), then the user's split tunneling list.
+/// Domains are resolved now, before any route changes, with the system
+/// resolver; one that fails to resolve is logged and skipped rather than
+/// blocking the connection.
+pub async fn bypass_networks(cfg: &AuraConfig) -> Result<Vec<Ipv4Net>, String> {
+    let mut nets: Vec<Ipv4Net> = server_ipv4(&cfg.servers)?
+        .into_iter()
+        .map(Ipv4Net::host)
+        .collect();
+    if cfg.split.bypass_lan {
+        nets.extend(
+            LAN_RANGES
+                .iter()
+                .map(|&(ip, prefix)| Ipv4Net::new(ip, prefix)),
+        );
+    }
+    let mut lookups = tokio::task::JoinSet::new();
+    for raw in &cfg.split.bypass {
+        match parse_bypass_entry(raw)? {
+            BypassEntry::Net(net) => nets.push(net),
+            BypassEntry::Domain(domain) => {
+                lookups.spawn(resolve_bypass_domain(domain));
+            }
+        }
+    }
+    while let Some(resolved) = lookups.join_next().await {
+        nets.extend(resolved.unwrap_or_default().into_iter().map(Ipv4Net::host));
+    }
+    let mut seen = HashSet::new();
+    nets.retain(|net| seen.insert(*net));
+    Ok(nets)
+}
+
+/// A domain's IPv4 addresses plus its www. twin's, since sites usually live
+/// on both.
+async fn resolve_bypass_domain(domain: String) -> Vec<Ipv4Addr> {
+    let mut ips = Vec::new();
+    for name in [domain.clone(), format!("www.{domain}")] {
+        let lookup = tokio::time::timeout(Duration::from_secs(3), lookup_ipv4(&name)).await;
+        if let Ok(Ok(found)) = lookup {
+            ips.extend(found);
+        }
+    }
+    if ips.is_empty() {
+        log::warn!("split tunneling: {domain} did not resolve; it stays on the tunnel");
+    }
+    ips
+}
+
+pub fn run_command<S: AsRef<str>>(name: &str, args: &[S]) -> Result<String, String> {
+    let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     let mut cmd = Command::new(name);
-    cmd.args(args);
+    cmd.args(&args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -122,6 +181,33 @@ mod tests {
         let pinned = pin_server_ipv4(&[server("192.0.2.40")]).await.unwrap();
         assert_eq!(pinned[0].connect_address, "192.0.2.40");
         assert!(pin_server_ipv4(&[server("2001:db8::1")]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bypass_networks_merge_servers_lan_and_split_entries() {
+        let cfg = crate::config::parse_config(
+            r#"{"version":1,"tun":{"address":"172.19.0.1/30","mtu":1400},
+               "servers":[{"tag":"t","host":"t.example","connect_address":"192.0.2.1","port":443,"username":"u","password":"p"}],
+               "split":{"bypass_lan":true,"bypass":["192.0.2.1","198.51.100.7/24","localhost.invalid"]}}"#,
+        )
+        .unwrap();
+        let nets: Vec<String> = bypass_networks(&cfg)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(
+            nets,
+            [
+                "192.0.2.1/32",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "169.254.0.0/16",
+                "198.51.100.0/24",
+            ]
+        );
     }
 
     #[test]

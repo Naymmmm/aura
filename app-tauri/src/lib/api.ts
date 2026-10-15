@@ -141,14 +141,69 @@ export const heartbeat = (sessionId: string, delta = 0) =>
   call<boolean>("heartbeat", { session_id: sessionId, delta });
 export const closeSession = (sessionId: string) =>
   call<void>("close_session", { session_id: sessionId });
+/** The newer version available for this install, or null when up to date. */
 export const checkUpdate = () => call<string | null>("check_update");
+/** Downloads, verifies and installs the update, then restarts Aura. */
+export const installUpdate = () => call<void>("install_update");
+
+export const autostartEnabled = () => call<boolean>("autostart_enabled");
+export const setAutostart = (enabled: boolean) => call<void>("set_autostart", { enabled });
+
+/** Traffic that skips the tunnel (Settings → Split tunneling). */
+export interface SplitTunnel {
+  bypass_lan: boolean;
+  /** IPv4 addresses, IPv4 ranges (/8 to /32) and domains. */
+  bypass: string[];
+}
+
+export const MAX_BYPASS_ENTRIES = 128;
+
+export function loadSplitTunnel(): SplitTunnel {
+  try {
+    const raw = JSON.parse(localStorage.getItem("aura.split") ?? "null");
+    if (raw && typeof raw === "object") {
+      return {
+        bypass_lan: raw.bypass_lan === true,
+        bypass: Array.isArray(raw.bypass) ? raw.bypass.filter((x: unknown) => typeof x === "string") : [],
+      };
+    }
+  } catch {
+    // Fall through to the default.
+  }
+  return { bypass_lan: false, bypass: [] };
+}
+
+export function saveSplitTunnel(split: SplitTunnel) {
+  localStorage.setItem("aura.split", JSON.stringify(split));
+}
+
+const IPV4 = String.raw`(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}`;
+const BYPASS_IP = new RegExp(`^${IPV4}(?:/(?:[89]|[12]\\d|3[0-2]))?$`);
+const BYPASS_DOMAIN = /^(?:\*\.)?(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}\.?$/;
+
+/** Splits the editor text into entries; returns the lines that won't parse. */
+export function parseBypassList(text: string): { entries: string[]; invalid: string[] } {
+  const entries: string[] = [];
+  const invalid: string[] = [];
+  for (const line of text.split(/[\n,]/)) {
+    const value = line.replace(/#.*/, "").trim().toLowerCase();
+    if (!value) continue;
+    if (BYPASS_IP.test(value) || BYPASS_DOMAIN.test(value)) {
+      if (!entries.includes(value)) entries.push(value);
+    } else {
+      invalid.push(line.trim());
+    }
+  }
+  return { entries, invalid };
+}
 
 export const coreStart = (
   auto: boolean,
   selected: ServerInfo,
   servers: ServerInfo[],
   preferIp: boolean,
-) => call<string>("core_start", { auto, selected, servers, prefer_ip: preferIp });
+  split: SplitTunnel,
+) => call<string>("core_start", { auto, selected, servers, prefer_ip: preferIp, split });
 export const coreStop = () => call<boolean>("core_stop");
 export const coreStatus = () => call<CoreStatus>("core_status");
 export const coreStats = () => call<CoreStats>("core_stats");

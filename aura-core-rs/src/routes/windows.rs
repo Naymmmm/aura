@@ -1,9 +1,9 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 use serde::Deserialize;
 
-use super::{run_command, server_ipv4, RouteState};
-use crate::config::AuraConfig;
+use super::{run_command, RouteState};
+use crate::config::Ipv4Net;
 use crate::tailscale::tailscale_interface;
 
 pub fn tun_device_name() -> &'static str {
@@ -34,9 +34,12 @@ struct WindowsRoutes {
     tunnel_prefixes: Vec<&'static str>,
 }
 
-pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteState>, String> {
+pub fn configure_routes(
+    device: &str,
+    _mtu: i64,
+    bypass: &[Ipv4Net],
+) -> Result<Box<dyn RouteState>, String> {
     let default_route = default_route()?;
-    let bypass = server_ipv4(&cfg.servers)?;
     let output = run_powershell(&interface_setup_script(device))?;
     let tun_index: i64 = output
         .trim()
@@ -50,7 +53,7 @@ pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteS
         bypass_prefixes: Vec::new(),
         tunnel_prefixes: Vec::new(),
     };
-    if let Err(e) = state.apply(&bypass) {
+    if let Err(e) = state.apply(bypass) {
         let _ = state.close();
         return Err(e);
     }
@@ -58,17 +61,18 @@ pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteS
 }
 
 impl WindowsRoutes {
-    fn apply(&mut self, bypass: &[Ipv4Addr]) -> Result<(), String> {
-        let (if_index, next_hop) = (
-            self.default_route.interface_index,
-            &self.default_route.next_hop,
-        );
-        for ip in bypass {
-            let prefix = format!("{ip}/32");
-            run_powershell(&format!(
-                "Get-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {if_index} -NextHop '{next_hop}' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue; New-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {if_index} -NextHop '{next_hop}' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null"
+    fn apply(&mut self, bypass: &[Ipv4Net]) -> Result<(), String> {
+        // One PowerShell for the whole list: a split tunneling list can run to
+        // a hundred routes, and each PowerShell start costs most of a second.
+        // Recorded first so a failure halfway still removes what was added.
+        let prefixes: Vec<String> = bypass.iter().map(Ipv4Net::to_string).collect();
+        self.bypass_prefixes.extend(prefixes.iter().cloned());
+        if !prefixes.is_empty() {
+            run_powershell(&bypass_routes_script(
+                &prefixes,
+                self.default_route.interface_index,
+                &self.default_route.next_hop,
             ))?;
-            self.bypass_prefixes.push(prefix);
         }
         for prefix in ["0.0.0.0/1", "128.0.0.0/1", "2000::/3"] {
             let hop = if prefix.contains(':') {
@@ -84,6 +88,17 @@ impl WindowsRoutes {
         }
         Ok(())
     }
+}
+
+fn bypass_routes_script(prefixes: &[String], if_index: i64, next_hop: &str) -> String {
+    let list = prefixes
+        .iter()
+        .map(|p| format!("'{p}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "foreach ($prefix in @({list})) {{ Get-NetRoute -DestinationPrefix $prefix -InterfaceIndex {if_index} -NextHop '{next_hop}' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue; New-NetRoute -DestinationPrefix $prefix -InterfaceIndex {if_index} -NextHop '{next_hop}' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null }}"
+    )
 }
 
 fn interface_setup_script(device: &str) -> String {
@@ -135,9 +150,15 @@ impl RouteState for WindowsRoutes {
                 errors.push(e);
             }
         }
-        for prefix in self.bypass_prefixes.drain(..) {
+        let prefixes: Vec<String> = self.bypass_prefixes.drain(..).collect();
+        if !prefixes.is_empty() {
+            let list = prefixes
+                .iter()
+                .map(|p| format!("'{p}'"))
+                .collect::<Vec<_>>()
+                .join(",");
             let script = format!(
-                "Get-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {} -NextHop '{}' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
+                "foreach ($prefix in @({list})) {{ Get-NetRoute -DestinationPrefix $prefix -InterfaceIndex {} -NextHop '{}' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue }}",
                 self.default_route.interface_index, self.default_route.next_hop
             );
             if let Err(e) = run_powershell(&script) {
@@ -165,6 +186,17 @@ impl RouteState for WindowsRoutes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bypass_routes_are_added_in_one_script() {
+        let script = bypass_routes_script(
+            &["192.0.2.1/32".into(), "10.0.0.0/8".into()],
+            7,
+            "192.168.1.1",
+        );
+        assert!(script.starts_with("foreach ($prefix in @('192.0.2.1/32','10.0.0.0/8'))"));
+        assert!(script.contains("-InterfaceIndex 7 -NextHop '192.168.1.1'"));
+    }
 
     #[test]
     fn interface_setup_is_idempotent() {

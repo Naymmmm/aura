@@ -19,7 +19,9 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 use crate::config::AuraConfig;
 use crate::naive::{start_naive, ManagedProcess};
 use crate::proxy::MultiProxy;
-use crate::routes::{configure_routes, pin_server_ipv4, tun_device_name, RouteState};
+use crate::routes::{
+    bypass_networks, configure_routes, pin_server_ipv4, tun_device_name, RouteState,
+};
 use crate::udp::{PacketSink, UdpMux, UDP_IDLE_TIMEOUT};
 
 /// Idle TCP connections are only reset after this long. SSH sessions, push
@@ -104,6 +106,8 @@ impl VpnRuntime {
             .await
             .unwrap_or_else(|_| Err("no NaiveProxy server passed its health probe".into()))?;
 
+        // Resolve split tunneling domains while DNS still uses the real network.
+        let bypass = bypass_networks(cfg).await?;
         let mtu = cfg.tun.mtu as u16;
         let device = open_tun(mtu).await.map_err(|e| format!("open TUN: {e}"))?;
         let device_name = device.name().map_err(|e| format!("open TUN: {e}"))?;
@@ -120,9 +124,9 @@ impl VpnRuntime {
         ));
         self.tasks.lock().unwrap().extend([serve, inject]);
 
-        let route_cfg = cfg.clone();
+        let route_mtu = cfg.tun.mtu;
         let routes =
-            tokio::task::spawn_blocking(move || configure_routes(&device_name, &route_cfg))
+            tokio::task::spawn_blocking(move || configure_routes(&device_name, route_mtu, &bypass))
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| format!("configure system routes: {e}"))?;

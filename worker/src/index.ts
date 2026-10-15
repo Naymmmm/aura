@@ -6,6 +6,7 @@
 // POST /v1/session/{id}/heartbeat → keep session alive
 // DELETE /v1/session/{id}        → release session
 // GET  /v1/release/meta?key=     → {version, sha256, size} for the auto-updater
+// GET  /v1/update/{target}/{arch}/{version} → Tauri updater manifest, 204 if current
 // GET  /admin                    → admin panel HTML
 // /v1/admin/...                  → admin API (login/logout/me/accounts/release)
 // GET  /archive                → public version archive (Stable / Dev)
@@ -14,7 +15,7 @@
 import { json, HDRS, safeEqual } from './util';
 import { handleOpenSession, handleHeartbeat, handleCloseSession } from './auth';
 import { handleAdminRoute } from './admin';
-import { serveDownload, serveArchiveAPI, serveReleaseMeta } from './releases';
+import { serveDownload, serveArchiveAPI, serveReleaseMeta, serveTauriUpdate } from './releases';
 import { handleCiRelease, handleCiReleaseAnnouncement } from './releases';
 import { handleDiscordCallback, handleDiscordLogin } from './discord_auth';
 import { finishAppDiscordLogin, handleAppDiscordHandoff, pollAppDiscordLogin, revokeAppToken, startAppDiscordLogin } from './app_auth';
@@ -59,6 +60,12 @@ export default {
     if (url.pathname === '/v1/release/meta') {
       if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
       return serveReleaseMeta(req, env);
+    }
+
+    const updateMatch = url.pathname.match(/^\/v1\/update\/([a-z]+)\/([a-z0-9_]+)\/([A-Za-z0-9.+-]{1,64})$/);
+    if (updateMatch) {
+      if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
+      return serveTauriUpdate(env, updateMatch[1], updateMatch[2], updateMatch[3]);
     }
 
     if (url.pathname === '/v1/releases/publish') {

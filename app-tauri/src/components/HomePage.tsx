@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { toast } from "sonner";
 import { AuraMark } from "@/components/AuraMark";
 import { fmtBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -94,11 +93,13 @@ export function HomePage({
           {aura.updateVersion && (
             <button
               type="button"
-              onClick={() => toast.info(`${aura.updateVersion} is out — download it from api.copal.run/archive`)}
+              disabled={aura.updating}
+              title={`Install Aura ${aura.updateVersion} and restart`}
+              onClick={() => void aura.installAppUpdate()}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
             >
               <Download className="size-3.5" />
-              Update
+              {aura.updating ? "Updating…" : "Update"}
             </button>
           )}
           <IconButton title="Settings" onClick={onOpenSettings}>

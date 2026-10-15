@@ -244,65 +244,6 @@ pub async fn close_session(session_id: &str) {
     }
 }
 
-/// GET /v1/release/meta?key=… — the newer version string, or None.
-pub async fn check_update(platform_key: &str) -> Result<Option<String>, ApiError> {
-    let resp = client()?
-        .get(format!("{API_BASE}/v1/release/meta?key={platform_key}"))
-        .send()
-        .await
-        .map_err(|e| ApiError::new(AuthErrorKind::Network, e.to_string()))?;
-    if resp.status() != StatusCode::OK {
-        return Ok(None);
-    }
-    let value: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::new(AuthErrorKind::Network, e.to_string()))?;
-    let version = value["version"].as_str().map(str::to_owned);
-    Ok(version.filter(|v| v != APP_VERSION && is_newer(v, APP_VERSION)))
-}
-
-/// 'v0.2.4' > 'v0.2.3'; falls back to plain string compare.
-fn is_newer(a: &str, b: &str) -> bool {
-    match (version_parts(a), version_parts(b)) {
-        (Some(va), Some(vb)) => {
-            for i in 0..3 {
-                if va[i] != vb[i] {
-                    return va[i] > vb[i];
-                }
-            }
-            false
-        }
-        _ => a > b,
-    }
-}
-
-fn version_parts(v: &str) -> Option<[i32; 3]> {
-    let v = v.trim_start_matches('v');
-    let mut parts = v.split('.');
-    let a = parts.next()?.parse().ok();
-    let b = parts.next()?.parse().ok();
-    let c = parts.next().and_then(|p| p.parse().ok());
-    if let (Some(a), Some(b), Some(c)) = (a, b, c) {
-        Some([a, b, c])
-    } else {
-        None
-    }
-}
-
-/// Platform release key (mirrors the Worker download URLs).
-pub fn platform_key() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "latest-macos"
-    } else if cfg!(target_os = "linux") {
-        "latest-linux"
-    } else if cfg!(target_arch = "aarch64") {
-        "latest-windows-arm64"
-    } else {
-        "latest"
-    }
-}
-
 /// Open a URL in the default browser, the same way the Flutter app did.
 pub async fn open_browser(url: &str) -> Result<(), ApiError> {
     let status = if cfg!(target_os = "macos") {

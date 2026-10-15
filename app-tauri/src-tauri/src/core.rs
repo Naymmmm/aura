@@ -17,11 +17,13 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::models::{AuthErrorKind, ServerInfo};
 
-pub const CORE_VERSION: &str = "26.3.1";
+pub const CORE_VERSION: &str = "26.4.0";
+/// The first helper that understands the config's `split` section.
+const SPLIT_TUNNEL_CORE_VERSION: &str = "26.4.0";
 const CORE_BASE: &str = "http://127.0.0.1:45873";
 const PORT: u16 = 443;
 
@@ -235,6 +237,47 @@ fn stats_value(v: &serde_json::Value) -> CoreStats {
 
 // ---- lifecycle --------------------------------------------------------------
 
+/// Traffic that skips the tunnel, as set in Settings → Split tunneling.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SplitTunnel {
+    #[serde(default)]
+    pub bypass_lan: bool,
+    /// IPv4 addresses, ranges and domains; the helper validates each one.
+    #[serde(default)]
+    pub bypass: Vec<String>,
+}
+
+impl SplitTunnel {
+    fn is_empty(&self) -> bool {
+        !self.bypass_lan && self.bypass.is_empty()
+    }
+}
+
+/// The `config` the helper's start endpoint accepts. The `split` section is
+/// only sent when it's in use, so helpers older than 26.4 keep working for
+/// everyone who never turned split tunneling on.
+fn tunnel_config(chosen: &ServerInfo, prefer_ip: bool, split: &SplitTunnel) -> serde_json::Value {
+    let mut config = serde_json::json!({
+        "version": 1,
+        "tun": { "address": "172.19.0.1/30", "mtu": 1400 },
+        "servers": [{
+            "tag": chosen.tag,
+            "host": chosen.host,
+            "connect_address": chosen.connect_address(prefer_ip),
+            "port": PORT,
+            "username": chosen.username,
+            "password": chosen.password,
+        }],
+    });
+    if !split.is_empty() {
+        config["split"] = serde_json::json!({
+            "bypass_lan": split.bypass_lan,
+            "bypass": split.bypass,
+        });
+    }
+    config
+}
+
 /// Bring up a real TUN tunnel through the privileged helper. Returns the active
 /// server tag once the daemon reports the tunnel is alive.
 pub fn start(
@@ -242,9 +285,19 @@ pub fn start(
     selected: &ServerInfo,
     servers: &[ServerInfo],
     prefer_ip: bool,
+    split: &SplitTunnel,
 ) -> Result<String, String> {
     if servers.is_empty() {
         return Err("no servers to connect".to_string());
+    }
+    if !split.is_empty() {
+        let info = helper_info();
+        if info.installed && version_lt(info.version.as_deref().unwrap_or("0"), SPLIT_TUNNEL_CORE_VERSION) {
+            return Err(
+                "Split tunneling needs the latest Aura helper. Update it in Settings → Helper, or turn split tunneling off."
+                    .to_string(),
+            );
+        }
     }
     // Only auto mode needs the probe; a manual pick skips straight to start.
     let chosen = if auto {
@@ -262,18 +315,7 @@ pub fn start(
     };
 
     // The daemon's parseConfig uses DisallowUnknownFields: only this schema.
-    let config = serde_json::json!({
-        "version": 1,
-        "tun": { "address": "172.19.0.1/30", "mtu": 1400 },
-        "servers": [{
-            "tag": chosen.tag,
-            "host": chosen.host,
-            "connect_address": chosen.connect_address(prefer_ip),
-            "port": PORT,
-            "username": chosen.username,
-            "password": chosen.password,
-        }],
-    });
+    let config = tunnel_config(&chosen, prefer_ip, split);
 
     let resp = request("POST", "/v1/start", Some(serde_json::json!({ "config": config })))?;
     if resp.status() != 200 {
@@ -740,6 +782,27 @@ pub fn uninstall(app_data_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_section_is_only_sent_when_used() {
+        let server = ServerInfo {
+            tag: "romeo".into(),
+            host: "romeo.example.com".into(),
+            ip: "192.0.2.2".into(),
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let plain = tunnel_config(&server, false, &SplitTunnel::default());
+        assert!(plain.get("split").is_none(), "older helpers reject unknown fields");
+        let split = SplitTunnel {
+            bypass_lan: true,
+            bypass: vec!["netflix.com".into()],
+        };
+        assert_eq!(
+            tunnel_config(&server, false, &split)["split"],
+            serde_json::json!({ "bypass_lan": true, "bypass": ["netflix.com"] })
+        );
+    }
 
     #[test]
     fn ps_quote_strips_verbatim_prefixes() {

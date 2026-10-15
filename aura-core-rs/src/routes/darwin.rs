@@ -1,7 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
-use super::{run_command, server_ipv4, RouteState};
-use crate::config::AuraConfig;
+use super::{run_command, RouteState};
+use crate::config::Ipv4Net;
 use crate::tailscale::tailscale_interface;
 
 const ROUTE: &str = "/sbin/route";
@@ -25,7 +25,7 @@ pub fn tun_device_name() -> &'static str {
 
 struct DarwinRoutes {
     gateway: String,
-    bypass: Vec<Ipv4Addr>,
+    bypass: Vec<Ipv4Net>,
     tunnel_cidrs: Vec<&'static str>,
     ipv6_route: bool,
     tailnet: TailnetRoute,
@@ -44,9 +44,12 @@ struct TailnetRoute {
     prev_iface: String,
 }
 
-pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteState>, String> {
+pub fn configure_routes(
+    device: &str,
+    mtu: i64,
+    bypass: &[Ipv4Net],
+) -> Result<Box<dyn RouteState>, String> {
     let gateway = default_gateway()?;
-    let bypass = server_ipv4(&cfg.servers)?;
     let mut state = DarwinRoutes {
         gateway,
         bypass: Vec::new(),
@@ -54,7 +57,7 @@ pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteS
         ipv6_route: false,
         tailnet: TailnetRoute::default(),
     };
-    if let Err(e) = state.apply(device, cfg.tun.mtu, &bypass) {
+    if let Err(e) = state.apply(device, mtu, bypass) {
         let _ = state.close();
         return Err(e);
     }
@@ -62,7 +65,7 @@ pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteS
 }
 
 impl DarwinRoutes {
-    fn apply(&mut self, device: &str, mtu: i64, bypass: &[Ipv4Addr]) -> Result<(), String> {
+    fn apply(&mut self, device: &str, mtu: i64, bypass: &[Ipv4Net]) -> Result<(), String> {
         let mtu = mtu.to_string();
         run_command(
             IFCONFIG,
@@ -89,10 +92,9 @@ impl DarwinRoutes {
                 "alias",
             ],
         )?;
-        for ip in bypass {
-            let ip_text = ip.to_string();
-            match run_command(ROUTE, &["-n", "add", "-host", &ip_text, &self.gateway]) {
-                Ok(_) => self.bypass.push(*ip),
+        for net in bypass {
+            match run_command(ROUTE, &bypass_route_args("add", net, &self.gateway)[..]) {
+                Ok(_) => self.bypass.push(*net),
                 Err(e) if e.contains("File exists") => {}
                 Err(e) => return Err(e),
             }
@@ -117,6 +119,20 @@ impl DarwinRoutes {
         self.tailnet = keep_tailnet_on_tailscale();
         Ok(())
     }
+}
+
+/// `route` arguments that send `net` to the physical gateway.
+fn bypass_route_args(action: &str, net: &Ipv4Net, gateway: &str) -> Vec<String> {
+    let target = if net.prefix == 32 {
+        vec!["-host".to_string(), net.addr.to_string()]
+    } else {
+        vec!["-net".to_string(), net.to_string()]
+    };
+    ["-n".to_string(), action.to_string()]
+        .into_iter()
+        .chain(target)
+        .chain([gateway.to_string()])
+        .collect()
 }
 
 /// Makes sure 100.64.0.0/10 goes to Tailscale's utun. Captive/filtered
@@ -252,11 +268,10 @@ impl RouteState for DarwinRoutes {
                 errors.push(e);
             }
         }
-        for ip in self.bypass.drain(..).rev() {
-            if let Err(e) = run_command(
-                ROUTE,
-                &["-n", "delete", "-host", &ip.to_string(), &self.gateway],
-            ) {
+        for net in self.bypass.drain(..).rev() {
+            if let Err(e) =
+                run_command(ROUTE, &bypass_route_args("delete", &net, &self.gateway)[..])
+            {
                 errors.push(e);
             }
         }

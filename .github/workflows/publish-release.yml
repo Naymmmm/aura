@@ -53,18 +53,25 @@ jobs:
           AURA_RELEASE_UPLOAD_TOKEN: ${{ secrets.AURA_RELEASE_UPLOAD_TOKEN }}
         run: |
           set -euo pipefail
+          # publish <artifact> <file>: a <file>.sig next to it is the updater
+          # signature and goes along with it.
           publish() {
+            local -a signature=()
             sha256="$(sha256sum "$2" | awk '{print $1}')"
             content_type=application/zip
             case "$2" in
               *.dmg) content_type=application/x-apple-diskimage ;;
               *.exe) content_type=application/vnd.microsoft.portable-executable ;;
+              *.tar.gz) content_type=application/gzip ;;
+              *.AppImage) content_type=application/octet-stream ;;
             esac
+            if [ -f "$2.sig" ]; then signature=(-F "signature=$(cat "$2.sig")"); fi
             curl --fail-with-body --retry 3 --retry-all-errors \
               -H "Authorization: Bearer ${AURA_RELEASE_UPLOAD_TOKEN}" \
               -F "version=${{ inputs.version }}" \
               -F "artifact=$1" \
               -F "sha256=${sha256}" \
+              "${signature[@]}" \
               -F "file=@$2;type=${content_type}" \
               https://api.copal.run/v1/releases/publish
           }
@@ -78,6 +85,11 @@ jobs:
           done
           publish macos dist/aura-macos-universal/aura-macos-universal.dmg
           publish linux dist/aura-linux-x64/aura-linux-x64.zip
+          # Signed in-app update payloads, from builds that made them.
+          update=dist/aura-macos-universal/aura-macos-universal.app.tar.gz
+          if [ -f "$update.sig" ]; then publish macos-update "$update"; fi
+          update=dist/aura-linux-x64/aura-linux-x64.AppImage
+          if [ -f "$update.sig" ]; then publish linux-update "$update"; fi
           publish source aura-source.zip
 
       - name: Announce release in Discord

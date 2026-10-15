@@ -67,17 +67,24 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
   const artifact = String(form.get('artifact') ?? '');
   const suppliedSha256 = String(form.get('sha256') ?? '').toLowerCase();
   const promote = String(form.get('promote') ?? 'true') !== 'false';
+  // The Tauri updater's minisign signature of this file (contents of the .sig
+  // the bundler writes next to it). Update payloads are useless without one.
+  const signature = String(form.get('signature') ?? '').trim();
   if (
     !(file instanceof File) ||
     file.size > 95 * 1024 * 1024 ||
     !/^v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/.test(version) ||
-    !isArchiveArtifact(artifact)
+    !isArchiveArtifact(artifact) ||
+    (signature !== '' && !SIGNATURE_RE.test(signature)) ||
+    (isUpdateArtifact(artifact) && signature === '')
   ) {
     return json({ error: 'bad_request' }, 400);
   }
 
   const extension = artifactExtension(artifact, file.name);
   if (isInstallerArtifact(artifact) && extension !== 'exe') return json({ error: 'bad_request' }, 400);
+  if (artifact === 'macos-update' && extension !== 'tar.gz') return json({ error: 'bad_request' }, 400);
+  if (artifact === 'linux-update' && extension !== 'AppImage') return json({ error: 'bad_request' }, 400);
   const contentType = CONTENT_TYPES[extension];
   const archiveKey = `archive/${version}/${artifact}.${extension}`;
   let sha256: string;
@@ -109,6 +116,7 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
     size: file.size,
     sha256,
     uploaded,
+    ...(signature ? { signature } : {}),
   };
   const manifest = await readArchiveManifest(env.RELEASES, version);
   manifest.artifacts[artifact] = artifactMeta;
@@ -122,7 +130,15 @@ export async function handleCiRelease(req: Request, env: Env): Promise<Response>
     const canonical = canonicalKey(artifact);
     await env.RELEASES.put(
       `meta:${canonical}`,
-      JSON.stringify({ version, sha256, size: file.size, uploaded, target: archiveKey, artifact })
+      JSON.stringify({
+        version,
+        sha256,
+        size: file.size,
+        uploaded,
+        target: archiveKey,
+        artifact,
+        ...(signature ? { signature } : {}),
+      })
     );
   }
   return json({ version, artifact, key: archiveKey, size: file.size, sha256 }, 200);
@@ -201,7 +217,9 @@ type ArchiveArtifact =
   | 'windows-setup'
   | 'windows-arm64-setup'
   | 'macos'
+  | 'macos-update'
   | 'linux'
+  | 'linux-update'
   | 'source';
 const ARCHIVE_ARTIFACTS: readonly ArchiveArtifact[] = [
   'windows',
@@ -209,16 +227,29 @@ const ARCHIVE_ARTIFACTS: readonly ArchiveArtifact[] = [
   'windows-setup',
   'windows-arm64-setup',
   'macos',
+  'macos-update',
   'linux',
+  'linux-update',
   'source',
 ];
 
-type ArtifactExtension = 'zip' | 'dmg' | 'exe';
+type ArtifactExtension = 'zip' | 'dmg' | 'exe' | 'tar.gz' | 'AppImage';
 const CONTENT_TYPES: Record<ArtifactExtension, string> = {
   zip: 'application/zip',
   dmg: 'application/x-apple-diskimage',
   exe: 'application/vnd.microsoft.portable-executable',
+  'tar.gz': 'application/gzip',
+  AppImage: 'application/octet-stream',
 };
+
+// minisign signatures are base64 of a two-line text file, a few hundred bytes.
+const SIGNATURE_RE = /^[A-Za-z0-9+/=]{100,2048}$/;
+
+// Payloads only the in-app updater downloads: the macOS .app as a tarball and
+// the raw Linux AppImage. Windows updates reuse the NSIS installers.
+function isUpdateArtifact(artifact: ArchiveArtifact): boolean {
+  return artifact === 'macos-update' || artifact === 'linux-update';
+}
 
 // Windows installers are separate artifacts: `latest` stays a zip because the
 // Flutter app's Windows auto-updater downloads and unzips it.
@@ -230,6 +261,8 @@ function artifactExtension(artifact: ArchiveArtifact, fileName: string): Artifac
   const name = fileName.toLowerCase();
   if (isInstallerArtifact(artifact)) return name.endsWith('.exe') ? 'exe' : 'zip';
   if (artifact === 'macos' && name.endsWith('.dmg')) return 'dmg';
+  if (artifact === 'macos-update') return name.endsWith('.tar.gz') ? 'tar.gz' : 'zip';
+  if (artifact === 'linux-update') return name.endsWith('.appimage') ? 'AppImage' : 'zip';
   return 'zip';
 }
 
@@ -238,6 +271,7 @@ interface ArchiveArtifactMeta {
   size: number;
   sha256: string;
   uploaded: number;
+  signature?: string;
 }
 
 export interface ArchiveManifest {
@@ -260,7 +294,9 @@ function canonicalKey(artifact: ArchiveArtifact): string {
   if (artifact === 'windows-setup') return 'latest-windows-setup';
   if (artifact === 'windows-arm64-setup') return 'latest-windows-arm64-setup';
   if (artifact === 'macos') return 'latest-macos';
+  if (artifact === 'macos-update') return 'latest-macos-update';
   if (artifact === 'linux') return 'latest-linux';
+  if (artifact === 'linux-update') return 'latest-linux-update';
   return 'source';
 }
 
@@ -271,6 +307,8 @@ function artifactFileName(artifact: ArchiveArtifact, version: string, extension?
   if (artifact === 'windows-arm64-setup') return `aura-${version}-windows-arm64-setup.exe`;
   if (artifact === 'linux') return `aura-${version}-linux-x64.zip`;
   if (artifact === 'macos') return `aura-${version}-macos-arm64.${extension ?? 'dmg'}`;
+  if (artifact === 'macos-update') return `aura-${version}-macos-universal.app.tar.gz`;
+  if (artifact === 'linux-update') return `aura-${version}-linux-x64.AppImage`;
   return `aura-${version}-source.zip`;
 }
 
@@ -449,7 +487,7 @@ export async function serveReleaseMeta(req: Request, env: Env): Promise<Response
 }
 
 const VERSION_RE = /^v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/;
-const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|windows-arm64\.zip|windows-setup\.exe|windows-arm64-setup\.exe|linux\.zip|macos\.(?:zip|dmg)|source\.zip)$/;
+const ARCHIVE_KEY_RE = /^archive\/v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?\/(?:windows\.zip|windows-arm64\.zip|windows-setup\.exe|windows-arm64-setup\.exe|linux\.zip|linux-update\.AppImage|macos\.(?:zip|dmg)|macos-update\.tar\.gz|source\.zip)$/;
 
 // GET /dl/{key} — caller has already passed the Discord session gate.
 export async function serveDownload(req: Request, env: Env, key: string): Promise<Response> {
@@ -490,7 +528,15 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
   if (!obj) return json({ error: 'not found' }, 404);
 
   const isDmg = objectKey.endsWith('.dmg') || legacyType === 'dmg';
-  const extension: ArtifactExtension = objectKey.endsWith('.exe') ? 'exe' : isDmg ? 'dmg' : 'zip';
+  const extension: ArtifactExtension = objectKey.endsWith('.exe')
+    ? 'exe'
+    : objectKey.endsWith('.tar.gz')
+      ? 'tar.gz'
+      : objectKey.endsWith('.AppImage')
+        ? 'AppImage'
+        : isDmg
+          ? 'dmg'
+          : 'zip';
   const headers: Record<string, string> = {
     'content-type': CONTENT_TYPES[extension],
     'content-disposition': `attachment; filename="${dlName(objectKey, key, isDmg)}"`,
@@ -523,7 +569,7 @@ export async function serveDownload(req: Request, env: Env, key: string): Promis
 
 function dlName(objectKey: string, requestedKey: string, isDmg: boolean): string {
   const match = objectKey.match(
-    /^archive\/(v[^/]+)\/(windows|windows-arm64|windows-setup|windows-arm64-setup|macos|linux|source)\.(zip|dmg|exe)$/
+    /^archive\/(v[^/]+)\/(windows|windows-arm64|windows-setup|windows-arm64-setup|macos|macos-update|linux|linux-update|source)\.(zip|dmg|exe|tar\.gz|AppImage)$/
   );
   if (match) return artifactFileName(match[2] as ArchiveArtifact, match[1], match[3] as ArtifactExtension);
   if (requestedKey === 'latest') return 'aura-windows-amd64.zip';
@@ -550,4 +596,60 @@ function stampNow(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// Which promoted artifact updates each Tauri {target, arch}. Intel and Apple
+// Silicon Macs share the universal build.
+const UPDATE_SOURCES: Record<string, string> = {
+  'darwin-aarch64': 'latest-macos-update',
+  'darwin-x86_64': 'latest-macos-update',
+  'windows-x86_64': 'latest-windows-setup',
+  'windows-aarch64': 'latest-windows-arm64-setup',
+  'linux-x86_64': 'latest-linux-update',
+};
+
+// GET /v1/update/{target}/{arch}/{current_version} — the Tauri updater's
+// dynamic endpoint. 204 means "you're up to date"; otherwise the newest
+// promoted release, pointing at its immutable archive copy.
+export async function serveTauriUpdate(env: Env, target: string, arch: string, current: string): Promise<Response> {
+  const source = UPDATE_SOURCES[`${target}-${arch}`];
+  if (!source) return new Response(null, { status: 204 });
+  const object = await env.RELEASES.get(`meta:${source}`);
+  if (!object) return new Response(null, { status: 204 });
+  let meta: unknown;
+  try {
+    meta = await object.json();
+  } catch {
+    return new Response(null, { status: 204 });
+  }
+  if (
+    !meta ||
+    typeof meta !== 'object' ||
+    !('version' in meta) ||
+    typeof meta.version !== 'string' ||
+    !VERSION_RE.test(meta.version) ||
+    !('signature' in meta) ||
+    typeof meta.signature !== 'string' ||
+    !('target' in meta) ||
+    typeof meta.target !== 'string' ||
+    !ARCHIVE_KEY_RE.test(meta.target)
+  ) {
+    return new Response(null, { status: 204 });
+  }
+  const latest = meta.version.replace(/^v/, '');
+  const installed = current.replace(/^v/, '');
+  if (!VERSION_RE.test(`v${installed}`) || compareVersionsDescending(meta.version, `v${installed}`) >= 0) {
+    return new Response(null, { status: 204 });
+  }
+  const uploaded = 'uploaded' in meta && typeof meta.uploaded === 'number' ? meta.uploaded : Date.now();
+  return json(
+    {
+      version: latest,
+      notes: `Aura ${meta.version}`,
+      pub_date: new Date(uploaded).toISOString(),
+      url: `https://api.copal.run/dl/${meta.target}`,
+      signature: meta.signature,
+    },
+    200
+  );
 }

@@ -1,6 +1,6 @@
 [package]
 name = "aura"
-version = "26.3.2"
+version = "26.4.0"
 description = "Aura — DPI-resistant VPN desktop app (Tauri React + Rust port)"
 authors = ["you"]
 edition = "2021"
@@ -26,3 +26,7 @@ reqwest = { version = "0.12", features = ["json", "socks", "blocking"] }
 chrono = "0.4"
 getrandom = "0.2"
 
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"

@@ -30,7 +30,7 @@ describe('release workflow', () => {
   });
 
   it('ships macOS as a universal DMG instead of a zip', () => {
-    expect(workflow).toContain('--target universal-apple-darwin --bundles dmg');
+    expect(workflow).toContain('--target universal-apple-darwin --bundles app,dmg');
     expect(workflow).toContain('publish macos dist/aura-macos-universal/aura-macos-universal.dmg');
     expect(workflow).not.toContain('ditto -c -k --keepParent');
   });
@@ -40,6 +40,15 @@ describe('release workflow', () => {
     expect(workflow).not.toMatch(/(^|\s)go build/m);
     expect(workflow).toContain('publish windows-arm64');
     expect(workflow).toContain('publish linux');
+  });
+
+  it('signs and publishes in-app update payloads for every platform', () => {
+    expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}');
+    expect(workflow).toContain('publish macos-update dist/aura-macos-universal/aura-macos-universal.app.tar.gz');
+    expect(workflow).toContain('publish linux-update dist/aura-linux-x64/aura-linux-x64.AppImage');
+    expect(workflow).toContain('aura-windows-${{ matrix.arch }}-setup.exe.sig');
+    expect(workflow).toContain('-F "signature=$(cat "$2.sig")"');
+    expect(publishRelease).toContain('-F "signature=$(cat "$2.sig")"');
   });
 
   it('only promotes and announces tagged releases', () => {

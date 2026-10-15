@@ -1,7 +1,5 @@
-use std::net::Ipv4Addr;
-
-use super::{run_command, server_ipv4, RouteState};
-use crate::config::AuraConfig;
+use super::{run_command, RouteState};
+use crate::config::Ipv4Net;
 use crate::tailscale::tailscale_interface;
 
 pub fn tun_device_name() -> &'static str {
@@ -12,15 +10,18 @@ struct LinuxRoutes {
     device: String,
     gateway: String,
     gateway_dev: String,
-    bypass: Vec<Ipv4Addr>,
+    bypass: Vec<Ipv4Net>,
     tunnel_cidrs: Vec<&'static str>,
     ipv6_route: bool,
     dns: bool,
 }
 
-pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteState>, String> {
+pub fn configure_routes(
+    device: &str,
+    mtu: i64,
+    bypass: &[Ipv4Net],
+) -> Result<Box<dyn RouteState>, String> {
     let (gateway, gateway_dev) = default_gateway()?;
-    let bypass = server_ipv4(&cfg.servers)?;
     let mut state = LinuxRoutes {
         device: device.to_string(),
         gateway,
@@ -30,7 +31,7 @@ pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteS
         ipv6_route: false,
         dns: false,
     };
-    if let Err(e) = state.apply(cfg.tun.mtu, &bypass) {
+    if let Err(e) = state.apply(mtu, bypass) {
         let _ = state.close();
         return Err(e);
     }
@@ -38,7 +39,7 @@ pub fn configure_routes(device: &str, cfg: &AuraConfig) -> Result<Box<dyn RouteS
 }
 
 impl LinuxRoutes {
-    fn apply(&mut self, mtu: i64, bypass: &[Ipv4Addr]) -> Result<(), String> {
+    fn apply(&mut self, mtu: i64, bypass: &[Ipv4Net]) -> Result<(), String> {
         let dev = self.device.clone();
         run_command("ip", &["addr", "replace", "172.19.0.1/30", "dev", &dev])?;
         // IPv6 may be disabled system-wide; IPv4 still works.
@@ -57,8 +58,8 @@ impl LinuxRoutes {
             "ip",
             &["link", "set", "dev", &dev, "mtu", &mtu.to_string(), "up"],
         )?;
-        for ip in bypass {
-            let prefix = format!("{ip}/32");
+        for net in bypass {
+            let prefix = net.to_string();
             run_command(
                 "ip",
                 &[
@@ -71,7 +72,7 @@ impl LinuxRoutes {
                     &self.gateway_dev,
                 ],
             )?;
-            self.bypass.push(*ip);
+            self.bypass.push(*net);
         }
         // Two /1s beat the default route without replacing it. Tailscale's
         // tailnet lives in its own policy table (52), consulted before main,
@@ -140,8 +141,8 @@ impl RouteState for LinuxRoutes {
                 }
             }
         }
-        for ip in self.bypass.drain(..).rev() {
-            let prefix = format!("{ip}/32");
+        for net in self.bypass.drain(..).rev() {
+            let prefix = net.to_string();
             if let Err(e) = run_command(
                 "ip",
                 &[
